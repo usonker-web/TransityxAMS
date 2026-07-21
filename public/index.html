@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rama Bhaiya Planner</title>
+<script>
+  // Set the saved theme before the first paint, so a light-theme user never sees
+  // a flash of dark (or vice versa) while app.js is still loading.
+  try {
+    var t = localStorage.getItem('ramaTheme');
+    document.documentElement.dataset.theme = (t === 'light' || t === 'dark') ? t : 'dark';
+  } catch (e) { document.documentElement.dataset.theme = 'dark'; }
+</script>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛺</text></svg>">
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-mark">transit<span>yx</span></div>
+    <div class="brand-sub">Rama Planner</div>
+  </div>
+
+  <nav class="nav">
+    <button class="nav-item" data-view="today">
+      <span class="nav-label">Today</span>
+      <span class="nav-badge" id="badge-today"></span>
+    </button>
+    <button class="nav-item" data-view="plan">
+      <span class="nav-label">Plan a Day</span>
+    </button>
+    <button class="nav-item" data-view="map">
+      <span class="nav-label">Coverage Map</span>
+    </button>
+    <button class="nav-item" data-view="coverage">
+      <span class="nav-label">Needs Coverage</span>
+      <span class="nav-badge danger" id="badge-coverage"></span>
+    </button>
+    <button class="nav-item" data-view="areas">
+      <span class="nav-label">Areas</span>
+      <span class="nav-badge muted" id="badge-areas"></span>
+    </button>
+    <button class="nav-item" data-view="drivers">
+      <span class="nav-label">Drivers</span>
+      <span class="nav-badge muted" id="badge-drivers"></span>
+    </button>
+    <button class="nav-item" data-view="models">
+      <span class="nav-label">Auto Models</span>
+      <span class="nav-badge muted" id="badge-models"></span>
+    </button>
+    <button class="nav-item" data-view="trips">
+      <span class="nav-label">Visit Log</span>
+      <span class="nav-badge muted" id="badge-trips"></span>
+    </button>
+    <button class="nav-item" data-view="settings">
+      <span class="nav-label">Settings</span>
+      <span class="nav-badge warn" id="badge-settings"></span>
+    </button>
+  </nav>
+
+  <div class="sidebar-foot">
+    <button class="btn btn-primary btn-block" id="btn-plan-today">+ Plan Today</button>
+    <div class="theme-toggle" role="group" aria-label="Colour theme">
+      <button class="theme-opt" data-theme-set="dark"><span class="ico" aria-hidden="true">🌙</span> Dark</button>
+      <button class="theme-opt" data-theme-set="light"><span class="ico" aria-hidden="true">☀️</span> Light</button>
+    </div>
+    <div class="save-state" id="save-state">Saved</div>
+    <button class="sign-out" id="btn-sign-out">Sign out</button>
+  </div>
+</aside>
+
+<main class="main" id="main"></main>
+
+<div class="drawer-scrim" id="scrim"></div>
+<section class="drawer" id="drawer" aria-hidden="true"></section>
+
+<div class="toast-wrap" id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

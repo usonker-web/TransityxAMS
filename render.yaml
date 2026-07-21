@@ -1,0 +1,35 @@
+# Render blueprint. Point Render at this repo and it reads this file instead of
+# asking twenty questions in the dashboard.
+#
+# Singapore because it is the closest free region to Delhi — Oregon adds about
+# a quarter second to every click.
+#
+# The three `sync: false` values are secrets: Render prompts for them at deploy
+# time and never stores them in this file. See README, "Putting it online".
+services:
+  - type: web
+    name: rama-planner
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # The PRIVATE repo holding data.json. Must NOT be the repo this deploys
+      # from: the app writes on every edit, and writing here would trigger a
+      # redeploy — the server would restart itself all day.
+      - key: RAMA_GH_REPO
+        sync: false
+      # Fine-grained token, "Contents: read and write" on that data repo only.
+      - key: RAMA_GH_TOKEN
+        sync: false
+      # Only seeds a password when none is set yet. Changing the password in
+      # Settings sticks; this never overrides it on restart.
+      - key: RAMA_PASSWORD
+        sync: false
+      - key: RAMA_GH_PATH
+        value: data.json
+      - key: RAMA_GH_BRANCH
+        value: main

@@ -1,0 +1,13 @@
+# The driver list never goes in the code repo. On the PC it lives here; when
+# hosted it lives in the separate private data repo (see README, "Putting it
+# online"). Committing it here would copy 166 phone numbers, the Maps API key
+# and the login secret into every clone of the code.
+data.json
+data.json.tmp
+backups/
+
+# The spreadsheet it was all imported from — same reason.
+*.xlsx
+
+node_modules/
+.env

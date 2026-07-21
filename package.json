@@ -1,0 +1,14 @@
+{
+  "name": "rama-bhaiya-planner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Field planner for recruiting auto drivers across Delhi",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {}
+}
