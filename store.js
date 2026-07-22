@@ -274,7 +274,10 @@ function createStore({ dataFile, backupDir, env = process.env }) {
    * one HTTP round trip per keystroke; a function that handles one request has
    * nothing to batch.
    */
-  const debounceMs = env.RAMA_SERVERLESS ? 0 : DEBOUNCE_MS;
+  // Read at save time, not here. This store is created while server.js is first
+  // evaluated, which on Netlify can be before the adapter has had a chance to
+  // set the flag — capturing the value now would lock in the wrong one.
+  const debounceMs = () => (env.RAMA_SERVERLESS ? 0 : DEBOUNCE_MS);
 
   let timer = null;
   let firstDirtyAt = 0;
@@ -323,7 +326,7 @@ function createStore({ dataFile, backupDir, env = process.env }) {
       pendingData = data;
       if (!firstDirtyAt) firstDirtyAt = Date.now();
       clearTimeout(timer);
-      const wait = Math.min(debounceMs, Math.max(0, firstDirtyAt + MAX_WAIT_MS - Date.now()));
+      const wait = Math.min(debounceMs(), Math.max(0, firstDirtyAt + MAX_WAIT_MS - Date.now()));
       timer = setTimeout(() => drain(), wait);
       timer.unref?.();
     },

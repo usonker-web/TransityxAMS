@@ -20,6 +20,20 @@
 import { Readable } from 'node:stream';
 import app from '../../server.js';
 
+// Say so directly, rather than trusting a variable to arrive.
+//
+// netlify.toml's [context.*.environment] block sets variables for the BUILD and
+// not for the function runtime, so RAMA_SERVERLESS declared there never reaches
+// this process. Setting it in the UI works, but a deployment that silently
+// depends on someone having done that is a deployment waiting to break: without
+// it the server keeps its startup copy of the data, which is empty, and offers
+// to set a password on a planner that already has 166 drivers in it.
+//
+// This module is the one place that knows for certain, so it just says so. Both
+// server.js and store.js read the flag when they use it rather than when they
+// load, which is what makes setting it here — after the import above — work.
+process.env.RAMA_SERVERLESS = '1';
+
 const { handleRequest, store } = app;
 
 /** A node:http request, faked well enough for server.js and auth.js. */

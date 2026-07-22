@@ -52,10 +52,28 @@ const PUBLIC_DIR = [
 // Hosts hand you the port to listen on; 4520 is only the local default.
 const PORT = Number(process.env.PORT) || 4520;
 const HOSTED = !!process.env.PORT;
-// Set by netlify.toml. Changes two things: the data is re-read on every request
-// instead of once at boot, and saves stop waiting for the write debounce.
-// Both because a function container can be discarded the instant it replies.
-const SERVERLESS = !!process.env.RAMA_SERVERLESS;
+/**
+ * Are we running per-request rather than continuously? Changes two things: the
+ * data is re-read on every request instead of once at boot, and saves stop
+ * waiting for the write debounce. Both because a function container can be
+ * discarded the instant it replies.
+ *
+ * Read fresh on every call rather than captured once. netlify.toml's
+ * [context.*.environment] block sets variables for the BUILD, not for the
+ * function runtime — so a value captured while this module is first evaluated
+ * can easily be a value that never arrives. The adapter sets it directly for
+ * that reason, and the Lambda markers below are the belt to that braces:
+ * Netlify Functions run on Lambda, which always sets them.
+ */
+const isServerless = () => !!(
+  process.env.RAMA_SERVERLESS ||
+  process.env.LAMBDA_TASK_ROOT ||
+  process.env.AWS_LAMBDA_FUNCTION_NAME
+);
+
+// store.js decides its write debounce when it is created, which happens a few
+// lines below — before any adapter code has had a chance to run. Tell it now.
+if (isServerless()) process.env.RAMA_SERVERLESS = '1';
 
 // ---------------------------------------------------------------- persistence
 
@@ -98,7 +116,23 @@ function saveData(data) {
   store.save(data);
 }
 
-let db = structuredClone(EMPTY); // replaced by loadData() in main()
+let db = structuredClone(EMPTY); // replaced by refreshDb() before anything is served
+let dbLoaded = false;
+
+/**
+ * Pull the data in and make sure it has a session secret.
+ *
+ * `dbLoaded` exists because the empty starter object above is genuinely
+ * dangerous once a real backend is configured: it looks like a planner with no
+ * drivers in it, so the app offers to set a password and the first save writes
+ * that emptiness over everything. Nothing may be served until this has
+ * succeeded at least once — see handleRequest.
+ */
+async function refreshDb() {
+  db = await loadData();
+  ensureAuth();
+  dbLoaded = true;
+}
 
 // ---------------------------------------------------------------- helpers
 
@@ -675,9 +709,14 @@ async function authApi(req, res, url) {
     const { password } = await readBody(req);
     const problem = auth.passwordProblem(password);
     if (problem) return send(res, 400, { error: problem });
-    db.settings.auth.hash = auth.hashPassword(password);
-    db.settings.auth.gen = (db.settings.auth.gen ?? 0) + 1;
-    db.settings.auth.setAt = new Date().toISOString();
+    // ??= rather than assuming ensureAuth() has run. It always has, in every
+    // path that exists today — but when it once did not, this line threw
+    // "Cannot set properties of undefined" and said nothing about the real
+    // problem, which was that no data had been loaded at all.
+    const a = (db.settings.auth ??= {});
+    a.hash = auth.hashPassword(password);
+    a.gen = (a.gen ?? 0) + 1;
+    a.setAt = new Date().toISOString();
     saveData(db);
     grantSession(res, req);
     return send(res, 200, { ok: true });
@@ -1010,10 +1049,11 @@ async function handleRequest(req, res) {
     // since written over. So there, re-read before every request. It costs one
     // Firestore read per call and it is the difference between two people
     // editing safely and one of them silently undoing the other.
-    if (SERVERLESS) {
-      db = await loadData();
-      ensureAuth(); // the session secret has to exist before any cookie is checked
-    }
+    // Serverless re-reads every time. Everywhere else this is a one-off guard:
+    // if main() never ran — which is exactly what happens when this module is
+    // required by the Netlify adapter and the serverless flag fails to arrive —
+    // load the data now rather than serve the empty starter object.
+    if (isServerless() || !dbLoaded) await refreshDb();
 
     if (url.pathname.startsWith('/api/auth/')) return await authApi(req, res, url);
 
@@ -1075,8 +1115,7 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
 }
 
 async function main() {
-  db = await loadData();
-  ensureAuth();
+  await refreshDb();
 
   server.listen(PORT, () => {
     const s = summary(db);

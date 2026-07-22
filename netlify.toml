@@ -32,14 +32,15 @@
 [build.environment]
   NODE_VERSION = "20"
 
-[context.production.environment]
-  # Tells server.js it is running per-request rather than continuously: re-read
-  # the data on every call, and do not park writes behind a debounce timer that
-  # a frozen container will never fire. See the SERVERLESS notes in server.js.
-  RAMA_SERVERLESS = "1"
-
-[context.deploy-preview.environment]
-  RAMA_SERVERLESS = "1"
-
-[context.branch-deploy.environment]
-  RAMA_SERVERLESS = "1"
+# There is deliberately no [context.*.environment] block setting RAMA_SERVERLESS
+# here, and putting one back will not do what it looks like it does.
+#
+# Variables declared in this file reach the BUILD. They do not reach the
+# function at runtime. RAMA_SERVERLESS declared here therefore never arrives,
+# server.js keeps the empty dataset it starts with, and the site offers to set a
+# password on a planner that already has 166 drivers in it — while looking, from
+# the outside, exactly like a working deployment.
+#
+# netlify/functions/app.mjs sets the flag directly instead, because it is the
+# one piece of code that knows for certain it is running as a function. The only
+# variables that need to exist in the Netlify UI are the three RAMA_FB_ ones.
