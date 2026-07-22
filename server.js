@@ -31,7 +31,24 @@ const auth = require('./auth');
 const ROOT = __dirname;
 const DATA_FILE = path.join(ROOT, 'data.json');
 const BACKUP_DIR = path.join(ROOT, 'backups');
-const PUBLIC_DIR = path.join(ROOT, 'public');
+
+/**
+ * Where public/ actually is.
+ *
+ * On the PC this is simply next to this file. Bundled into a Netlify function it
+ * is not: esbuild inlines server.js into the bundle, so __dirname stops meaning
+ * "the project folder" and starts meaning "wherever the bundle landed", while
+ * netlify.toml's included_files drops public/ next to the working directory.
+ * The result is a server that runs perfectly and answers 404 to every page,
+ * which is a confusing thing to debug from the outside.
+ *
+ * So look, rather than assume. All three candidates are checked once at startup.
+ */
+const PUBLIC_DIR = [
+  path.join(ROOT, 'public'),          // the PC, and any plain `node server.js`
+  path.join(process.cwd(), 'public'), // Netlify: cwd is the deploy root
+  path.join(ROOT, '..', '..', 'public'), // bundle at netlify/functions/, repo above
+].find((p) => fs.existsSync(p)) ?? path.join(ROOT, 'public');
 // Hosts hand you the port to listen on; 4520 is only the local default.
 const PORT = Number(process.env.PORT) || 4520;
 const HOSTED = !!process.env.PORT;
@@ -961,7 +978,12 @@ function serveStatic(res, pathname) {
   const file = path.join(PUBLIC_DIR, rel);
   // Never let a crafted path climb out of public/.
   if (!file.startsWith(PUBLIC_DIR)) return send(res, 403, { error: 'Forbidden' });
-  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    // Say where we looked. A 404 for index.html on a host almost always means
+    // public/ did not travel with the code, not that the URL was wrong.
+    console.error(`  ! 404 ${pathname} — no ${file} (PUBLIC_DIR=${PUBLIC_DIR}, cwd=${process.cwd()})`);
+    return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
+  }
   res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': 'no-cache' });
   // Read whole rather than stream. These are four small files, and a stream
   // needs a real socket to pipe into — the Netlify adapter hands us a collector
