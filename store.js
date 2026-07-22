@@ -22,6 +22,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 // ---------------------------------------------------------------- file backend
 
@@ -124,6 +125,119 @@ function githubStore({ repo, token, branch, filePath }) {
   };
 }
 
+// ---------------------------------------------------------------- firestore backend
+
+/**
+ * Cloud Firestore over its REST API. Still zero dependencies — the firebase-admin
+ * SDK is ~50MB of code to do what sixty lines of fetch and node:crypto do here,
+ * and on Netlify that weight is paid again on every cold start.
+ *
+ * WHAT IT STORES: data.json, whole, as one JSON string in one field of one
+ * document. Not shredded into Firestore collections. The app reads and writes
+ * the entire dataset every time anyway, nothing queries it by field, and the
+ * translation to Firestore's typed-value format (arrayValue of mapValue of
+ * arrayValue...) is lossy around empty arrays and undefined. One string means
+ * what comes back out is exactly what went in.
+ *
+ * The ceiling is Firestore's 1 MiB per document. 166 drivers come to 122 KB
+ * stored — the file on disk looks bigger only because it is written indented —
+ * so this is using about an eighth of the limit, and the failure when it is
+ * reached is a loud 400 from the API rather than silent truncation. Split into
+ * per-driver documents if that day ever comes.
+ */
+function firestoreStore({ projectId, clientEmail, privateKey, docPath }) {
+  const base = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
+  const url = `${base}/${docPath}`;
+
+  let token = null;      // cached access token
+  let tokenExpiry = 0;   // ms epoch, with a minute of slack
+
+  const b64u = (s) => Buffer.from(s).toString('base64url');
+
+  /**
+   * Service-account OAuth: sign a JWT with the private key, trade it for an
+   * access token. Google gives an hour; we re-use it until a minute before it
+   * dies, so a warm function invocation costs no extra round trip.
+   */
+  async function accessToken() {
+    if (token && Date.now() < tokenExpiry) return token;
+
+    const now = Math.floor(Date.now() / 1000);
+    const claim = {
+      iss: clientEmail,
+      scope: 'https://www.googleapis.com/auth/datastore',
+      aud: 'https://oauth2.googleapis.com/token',
+      iat: now,
+      exp: now + 3600,
+    };
+    const signing = `${b64u(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${b64u(JSON.stringify(claim))}`;
+    const sig = crypto.createSign('RSA-SHA256').update(signing).sign(privateKey).toString('base64url');
+
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: `${signing}.${sig}`,
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(
+        `Firebase refused the service account (${res.status}). Check RAMA_FB_CLIENT_EMAIL and ` +
+        `RAMA_FB_PRIVATE_KEY — the key must include the BEGIN/END lines and real line breaks. ` +
+        `${(await res.text()).slice(0, 200)}`,
+      );
+    }
+    const json = await res.json();
+    token = json.access_token;
+    tokenExpiry = Date.now() + (json.expires_in - 60) * 1000;
+    return token;
+  }
+
+  async function headers() {
+    return { Authorization: `Bearer ${await accessToken()}`, 'Content-Type': 'application/json' };
+  }
+
+  return {
+    kind: 'firestore',
+    describe: () => `Firestore ${projectId} → ${docPath}`,
+
+    async load() {
+      const res = await fetch(url, { headers: await headers() });
+      // First ever run: the document does not exist yet. Start empty and create
+      // it on the first save, exactly as the GitHub backend does.
+      if (res.status === 404) return null;
+      if (res.status === 401 || res.status === 403) {
+        throw new Error(
+          `Firestore refused the request (${res.status}). The service account needs the ` +
+          `"Cloud Datastore User" role on ${projectId}.`,
+        );
+      }
+      if (!res.ok) throw new Error(`Firestore ${res.status} reading ${docPath}`);
+      const doc = await res.json();
+      const raw = doc.fields?.json?.stringValue;
+      if (!raw) return null; // document exists but is empty or hand-edited
+      return JSON.parse(raw);
+    },
+
+    async write(data) {
+      const res = await fetch(url, {
+        method: 'PATCH',
+        headers: await headers(),
+        body: JSON.stringify({
+          fields: {
+            json: { stringValue: JSON.stringify(data) },
+            savedAt: { timestampValue: new Date().toISOString() },
+          },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`Firestore ${res.status}: ${(await res.text()).slice(0, 300)}`);
+      }
+    },
+  };
+}
+
 // ---------------------------------------------------------------- the store
 
 const DEBOUNCE_MS = 1500;
@@ -131,7 +245,19 @@ const MAX_WAIT_MS = 10000; // never let continuous editing postpone a save forev
 const RETRY_MS = 5000;
 
 function createStore({ dataFile, backupDir, env = process.env }) {
-  const backend = env.RAMA_GH_TOKEN && env.RAMA_GH_REPO
+  // First match wins. Firestore before GitHub so that setting the Firebase vars
+  // on a box that still has the old GitHub ones moves the data over rather than
+  // quietly carrying on writing to the repo.
+  const backend = env.RAMA_FB_PROJECT && env.RAMA_FB_CLIENT_EMAIL && env.RAMA_FB_PRIVATE_KEY
+    ? firestoreStore({
+      projectId: env.RAMA_FB_PROJECT,
+      clientEmail: env.RAMA_FB_CLIENT_EMAIL,
+      // Env vars cannot hold real newlines on most hosts, so the key arrives
+      // with literal backslash-n. PEM parsing fails on it, unhelpfully.
+      privateKey: env.RAMA_FB_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      docPath: env.RAMA_FB_DOC || 'planner/data',
+    })
+    : env.RAMA_GH_TOKEN && env.RAMA_GH_REPO
     ? githubStore({
       repo: env.RAMA_GH_REPO,
       token: env.RAMA_GH_TOKEN,
@@ -139,6 +265,16 @@ function createStore({ dataFile, backupDir, env = process.env }) {
       filePath: env.RAMA_GH_PATH || 'data.json',
     })
     : fileStore({ dataFile, backupDir });
+
+  /**
+   * Serverless has nowhere to hide a pending write: the container is frozen the
+   * moment the response goes out, and a debounce timer that has not fired yet
+   * never will. So on Netlify the delay drops to zero and the function waits for
+   * the write before replying. The debounce exists to spare a long-lived server
+   * one HTTP round trip per keystroke; a function that handles one request has
+   * nothing to batch.
+   */
+  const debounceMs = env.RAMA_SERVERLESS ? 0 : DEBOUNCE_MS;
 
   let timer = null;
   let firstDirtyAt = 0;
@@ -187,7 +323,7 @@ function createStore({ dataFile, backupDir, env = process.env }) {
       pendingData = data;
       if (!firstDirtyAt) firstDirtyAt = Date.now();
       clearTimeout(timer);
-      const wait = Math.min(DEBOUNCE_MS, Math.max(0, firstDirtyAt + MAX_WAIT_MS - Date.now()));
+      const wait = Math.min(debounceMs, Math.max(0, firstDirtyAt + MAX_WAIT_MS - Date.now()));
       timer = setTimeout(() => drain(), wait);
       timer.unref?.();
     },

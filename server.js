@@ -35,6 +35,10 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 // Hosts hand you the port to listen on; 4520 is only the local default.
 const PORT = Number(process.env.PORT) || 4520;
 const HOSTED = !!process.env.PORT;
+// Set by netlify.toml. Changes two things: the data is re-read on every request
+// instead of once at boot, and saves stop waiting for the write debounce.
+// Both because a function container can be discarded the instant it replies.
+const SERVERLESS = !!process.env.RAMA_SERVERLESS;
 
 // ---------------------------------------------------------------- persistence
 
@@ -959,7 +963,10 @@ function serveStatic(res, pathname) {
   if (!file.startsWith(PUBLIC_DIR)) return send(res, 403, { error: 'Forbidden' });
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
   res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': 'no-cache' });
-  fs.createReadStream(file).pipe(res);
+  // Read whole rather than stream. These are four small files, and a stream
+  // needs a real socket to pipe into — the Netlify adapter hands us a collector
+  // object, not one of those.
+  res.end(fs.readFileSync(file));
 }
 
 // ---------------------------------------------------------------- server
@@ -972,9 +979,20 @@ function serveStatic(res, pathname) {
 const OPEN_PATHS = new Set(['/login', '/style.css', '/favicon.ico']);
 const isOpen = (p) => OPEN_PATHS.has(p) || p.startsWith('/api/auth/');
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   try {
+    // On a long-lived server `db` is loaded once in main() and lives in memory.
+    // Serverless has no "once": each invocation may be a brand new container,
+    // or a warm one holding a copy from minutes ago that another container has
+    // since written over. So there, re-read before every request. It costs one
+    // Firestore read per call and it is the difference between two people
+    // editing safely and one of them silently undoing the other.
+    if (SERVERLESS) {
+      db = await loadData();
+      ensureAuth(); // the session secret has to exist before any cookie is checked
+    }
+
     if (url.pathname.startsWith('/api/auth/')) return await authApi(req, res, url);
 
     if (!loggedIn(req)) {
@@ -998,7 +1016,9 @@ const server = http.createServer(async (req, res) => {
     console.error(`  ! ${req.method} ${url.pathname} — ${err.message}`);
     send(res, 500, { error: err.message });
   }
-});
+}
+
+const server = http.createServer(handleRequest);
 
 // The browser is opened HERE, not by the .bat, and only once the port is
 // actually accepting connections. Opening it first is a race the server loses
@@ -1064,7 +1084,14 @@ async function main() {
   });
 }
 
-main().catch((err) => {
-  console.error(`\n  Could not start: ${err.message}\n`);
-  process.exit(1);
-});
+// Only listen when started directly (the .bat, or `npm start`). Required from
+// the Netlify function, this file must hand over a request handler and open no
+// port at all — the function has no port to open.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`\n  Could not start: ${err.message}\n`);
+    process.exit(1);
+  });
+}
+
+module.exports = { handleRequest, store, loadData, ensureAuth, setDb: (d) => { db = d; } };

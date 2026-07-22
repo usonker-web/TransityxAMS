@@ -456,65 +456,125 @@ backed up automatically.
 
 ## Putting it online
 
-The same code runs on the PC and on a free host. Nothing is rewritten — the app
-looks at two settings and decides:
+The site goes on **Netlify**, the data goes in **Firebase (Cloud Firestore)**.
+The same code still runs on the PC. Nothing is rewritten — the app looks at its
+settings and decides:
 
 | Setting present | What changes |
 |---|---|
 | `PORT` | Listens on that port and stops opening a browser tab. |
-| `RAMA_GH_TOKEN` + `RAMA_GH_REPO` | Data is read and written to a private GitHub repo instead of `data.json`. |
+| `RAMA_FB_*` | Data is read and written to Firestore instead of `data.json`. |
+| `RAMA_SERVERLESS` | Re-reads the data on every request and stops batching writes. |
+| `RAMA_GH_TOKEN` + `RAMA_GH_REPO` | The older option: data in a private GitHub repo. Still works; Firestore wins if both are set. |
 
-### Why the data goes to GitHub
+### Why the data has to live somewhere else at all
 
-Free hosting gives you a container with **no disk you can keep**. It is thrown
-away every time the app restarts — after fifteen idle minutes, after every
-deploy. Saving `data.json` there means losing a day's work to a nap. A private
-GitHub repo is free, needs no card, survives everything, and gives every save a
-timestamped version you can read back. `backups/` becomes git history.
+Hosting gives you a container with **no disk you can keep**. It is thrown away
+when the app restarts, and on Netlify it is thrown away after *every request*.
+Saving `data.json` there means losing the lot. Firestore is a database that
+belongs to you, holds this comfortably inside its free tier, and — unlike the
+GitHub-repo trick this replaces — is a thing built for the job rather than a
+clever misuse of version control.
 
-### It has to be TWO repos
+### What actually gets stored
 
-- **`rama-planner`** — the code. The host deploys from this one.
-- **`rama-planner-data`** — nothing but `data.json`. The app writes here.
+One document. `planner/data`, holding today's `data.json` verbatim as a single
+JSON string.
 
-They must be separate. The app saves on every edit; if it saved into the repo
-the host deploys from, each save would trigger a fresh deploy and the server
-would spend all day restarting itself.
+Not shredded into a collection per driver, and this is deliberate. The app reads
+and writes the whole dataset every time regardless, nothing queries it by field,
+and Firestore's typed-value format mangles empty arrays on the way through. One
+string means what comes back out is exactly what went in. The document limit is
+1 MiB and the file is 188 KB with 166 drivers, so there is room for roughly 900
+before this needs revisiting.
+
+### Netlify runs the app, it does not just serve it
+
+Worth understanding before you change anything. `server.js` is not a thin
+wrapper around storage — most of it is the arithmetic behind the heatmap, the
+coverage flags, the priority order and the day's route. The browser only renders
+what that arithmetic produced. A purely static site would mean rewriting all of
+it in the browser.
+
+So the whole server runs as one Netlify function (`netlify/functions/app.mjs`),
+per request instead of continuously. `netlify.toml` sends **every** path there,
+including `index.html` and `app.js`, because the login gate covers the
+application and not only its data — letting the CDN hand out the app around the
+side of the function would be a gate with an open door next to it.
+
+Two consequences fall out of running per-request, both handled by
+`RAMA_SERVERLESS`:
+
+- **The data is re-read on every call.** A function container is frozen the
+  instant it replies and may be a different one next time, so there is no
+  "loaded at boot" to trust. This costs one Firestore read per request and is
+  what lets two people edit without one silently undoing the other.
+- **Writes do not wait.** The 1.5-second debounce that spares a long-lived
+  server a round trip per keystroke would simply never fire here, so it drops to
+  zero and the function waits for Firestore before replying.
 
 ### Steps
 
-1. **Two private repos** on GitHub, named as above. Private, not public — the
-   driver list is the company's most copyable asset.
-2. **Push the code** to `rama-planner`. `data.json` and `backups/` are
-   gitignored, so this sends code only.
-3. **Seed the data repo.** Upload the current `data.json` to `rama-planner-data`
-   by hand, once. Skip this and the hosted app opens with **zero drivers** — it
-   starts empty when it finds no file, and your first edit saves that emptiness
-   over nothing. There is no data loss (the PC copy is untouched), but you will
-   have stared at an empty planner wondering where 166 people went.
-4. **A fine-grained token** — GitHub → Settings → Developer settings → Personal
-   access tokens → Fine-grained. Give it **`Contents: read and write`** on
-   `rama-planner-data` **only**. Not on the code repo, not on everything.
-5. **Deploy on Render**, pointing at `rama-planner`. It reads `render.yaml` and
-   asks only for the secrets: `RAMA_GH_REPO` (`yourname/rama-planner-data`),
-   `RAMA_GH_TOKEN`, and `RAMA_PASSWORD`.
+1. **A Firebase project** — [console.firebase.google.com](https://console.firebase.google.com).
+   Add Firestore Database, production mode, region `asia-south1` (Mumbai) for
+   the shortest hop from Delhi. Leave the security rules locked; nothing reaches
+   Firestore from the browser, only from the function.
+2. **A service account** — Project settings → Service accounts → Generate new
+   private key. A JSON file downloads. It is a password to your database: do not
+   commit it, do not email it.
+3. **Three environment variables on Netlify** — Site configuration →
+   Environment variables. From that JSON file:
 
-The startup line tells you which one you got — `Data: data.json in …` or
-`Data: yourname/rama-planner-data → data.json (main)`.
+   | Variable | From the JSON |
+   |---|---|
+   | `RAMA_FB_PROJECT` | `project_id` |
+   | `RAMA_FB_CLIENT_EMAIL` | `client_email` |
+   | `RAMA_FB_PRIVATE_KEY` | `private_key` — paste it whole, `BEGIN`/`END` lines and all |
 
-### What the free tier costs you
+   Add `RAMA_PASSWORD` too, for the first login. The `\n` sequences in the
+   private key are expected; `store.js` turns them back into line breaks,
+   because environment variables cannot carry real ones.
+4. **Connect the repo to Netlify** and deploy. `netlify.toml` supplies the build
+   settings, so the UI should not need anything beyond the variables above.
+5. **Move the existing data across.** Once, from the project folder, with the
+   same three `RAMA_FB_` variables set locally:
 
-It **sleeps after fifteen idle minutes**. The first visit after a nap takes
-30–50 seconds to load; everything after that is normal. The login survives the
-nap — sessions are a signed cookie, not a server-side table, precisely so a
-restart doesn't log him out several times a day.
+   ```
+   node migrate-to-firebase.js
+   ```
+
+   Skip this and the site opens with **zero drivers** — it starts empty when it
+   finds no document, and your first edit saves that emptiness over nothing.
+   There is no data loss (the PC copy is untouched), but you will have stared at
+   an empty planner wondering where 166 people went.
+
+   It refuses to run if there is already a document in Firestore, because by
+   then the online copy is the real one and this script pushes the *file* over
+   the *database*. `RAMA_OVERWRITE=1` forces it if you genuinely mean to.
+
+The startup line, in the Netlify function log, tells you which store it picked.
+`Data: data.json in …` means the variables did not arrive and it is writing to a
+disk that is about to be deleted.
+
+### What it costs
+
+Firestore's free tier is 1 GiB stored and 50,000 reads and 20,000 writes a day.
+This app is one 188 KB document; a busy day for three people is a few hundred
+reads. Netlify's free tier covers 125,000 function calls a month. Neither needs
+a card.
 
 ### The password
 
 Set once, then owned by the app. `RAMA_PASSWORD` only **seeds** it when none is
 set — it deliberately does not override on restart, or changing the password in
-Settings would silently undo itself at the next nap. Changing it signs out every
-device, which is the point of changing it after someone leaves.
+Settings would silently undo itself. Changing it signs out every device, which
+is the point of changing it after someone leaves.
+
+One thing genuinely weakens when running per-request: the failed-login lockout
+in `auth.js` is held in memory, and memory now lasts one request. It still slows
+a single persistent attacker, but it no longer counts across a whole burst. The
+password rules (eight characters, not all digits, not on the obvious list) are
+doing most of the work.
 
 ### The PC copy and the hosted copy do not talk
 
@@ -530,8 +590,11 @@ Pick one and stick to it.
 |---|---|
 | `server.js` | Local web server + API. Zero dependencies. |
 | `auth.js` | The password gate. Signed-cookie sessions, scrypt hashing. |
-| `store.js` | Where `data.json` lives — local disk or a private GitHub repo. |
-| `render.yaml` | Deploy settings for the host. |
+| `store.js` | Where the data lives — local disk, Firestore, or a private GitHub repo. |
+| `netlify.toml` | Netlify build and routing. Sends every path to the function. |
+| `netlify/functions/app.mjs` | Runs `server.js` as a Netlify function. Adapter only, no logic. |
+| `migrate-to-firebase.js` | One-time: pushes the PC's `data.json` into Firestore. |
+| `render.yaml` | Deploy settings for Render, the older host. |
 | `import.js` | Excel → `data.json`. Merges; never wipes. |
 | `xlsx-read.js` | Minimal `.xlsx` reader (an xlsx is a zip of XML; Node can do this alone). |
 | `areas.js` | The Delhi areas: aliases, zones, coordinates. |

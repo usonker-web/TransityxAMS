@@ -1,0 +1,45 @@
+# Netlify. The site is the function; Firestore holds the data.
+#
+# Set the three RAMA_FB_* secrets in the Netlify UI (Site configuration →
+# Environment variables), not here. See README, "Putting it online".
+
+[build]
+  # Nothing to build — zero dependencies, no bundler, no framework. `publish`
+  # still has to point somewhere real, so it points at the static files even
+  # though the redirect below means the CDN never serves them directly.
+  publish = "public"
+  command = "echo 'nothing to build'"
+
+[functions]
+  node_bundler = "esbuild"
+  # server.js reads these off disk at request time, so they have to travel with
+  # the function. Without this the site is a working API serving 404s for every
+  # page.
+  included_files = ["public/**"]
+
+[[redirects]]
+  # Everything. Not just /api — the login gate covers the application as well as
+  # its data, and a CDN quietly serving app.js and index.html around the
+  # function would be a gate with a door next to it.
+  #
+  # force = true is what makes that true: without it, Netlify serves a matching
+  # file from `publish` and never calls the function.
+  from = "/*"
+  to = "/.netlify/functions/app"
+  status = 200
+  force = true
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[context.production.environment]
+  # Tells server.js it is running per-request rather than continuously: re-read
+  # the data on every call, and do not park writes behind a debounce timer that
+  # a frozen container will never fire. See the SERVERLESS notes in server.js.
+  RAMA_SERVERLESS = "1"
+
+[context.deploy-preview.environment]
+  RAMA_SERVERLESS = "1"
+
+[context.branch-deploy.environment]
+  RAMA_SERVERLESS = "1"

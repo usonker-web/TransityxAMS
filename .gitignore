@@ -11,3 +11,9 @@ backups/
 
 node_modules/
 .env
+
+# Netlify's local build cache, and the service-account key if you ever download
+# it into the project folder. That key is a password to the whole database.
+.netlify/
+*firebase-adminsdk*.json
+serviceAccountKey.json
