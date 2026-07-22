@@ -1043,16 +1043,44 @@ const isOpen = (p) => OPEN_PATHS.has(p) || p.startsWith('/api/auth/');
 async function handleRequest(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   try {
+    /**
+     * Deliberately open, and deliberately first — before the data load below,
+     * so it still answers when that is what is broken.
+     *
+     * This exists because the failure it diagnoses is invisible from outside:
+     * when the storage variables are missing, createStore quietly falls back to
+     * a local file, finds nothing, and serves an empty planner with no error
+     * anywhere. From a browser that is indistinguishable from a working site
+     * that has lost its data.
+     *
+     * It reports which backend was chosen and whether anything came back. Never
+     * the data, never the credentials.
+     */
+    if (url.pathname === '/health') {
+      let doc = null;
+      let error = null;
+      // Read through the store rather than reporting on `db`, which has not
+      // been loaded at this point and would always look empty.
+      try { doc = await store.load(); } catch (err) { error = err.message; }
+      return send(res, 200, {
+        storage: store.kind,
+        serverless: isServerless(),
+        dataFound: !!doc,
+        contacts: doc?.contacts?.length ?? 0,
+        ...(error ? { error } : {}),
+      });
+    }
+
     // On a long-lived server `db` is loaded once in main() and lives in memory.
-    // Serverless has no "once": each invocation may be a brand new container,
-    // or a warm one holding a copy from minutes ago that another container has
+    // Serverless has no "once": each invocation may be a brand new container, or
+    // a warm one holding a copy from minutes ago that another container has
     // since written over. So there, re-read before every request. It costs one
-    // Firestore read per call and it is the difference between two people
-    // editing safely and one of them silently undoing the other.
-    // Serverless re-reads every time. Everywhere else this is a one-off guard:
-    // if main() never ran — which is exactly what happens when this module is
-    // required by the Netlify adapter and the serverless flag fails to arrive —
-    // load the data now rather than serve the empty starter object.
+    // read per call and is the difference between two people editing safely and
+    // one of them silently undoing the other.
+    //
+    // Everywhere else this is a one-off guard: if main() never ran — exactly
+    // what happens when this module is required by the Netlify adapter — load
+    // the data now rather than serve the empty starter object.
     if (isServerless() || !dbLoaded) await refreshDb();
 
     if (url.pathname.startsWith('/api/auth/')) return await authApi(req, res, url);
