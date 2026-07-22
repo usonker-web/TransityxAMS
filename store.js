@@ -340,8 +340,19 @@ function createStore({ dataFile, backupDir, env = process.env }) {
       clearTimeout(timer);
       const deadline = Date.now() + timeoutMs;
       while ((pendingData || writing) && Date.now() < deadline) {
-        if (writing) await new Promise((r) => setTimeout(r, 50));
-        else await drain();
+        if (writing) {
+          await new Promise((r) => setTimeout(r, 50));
+          continue;
+        }
+        await drain();
+        // drain() clears pendingData on success and puts it back on failure.
+        // Still set means the write failed, and an immediate retry fails the
+        // same way — so stop, rather than spinning until the deadline. That
+        // spin is not free: on a host that abandons a request after ten
+        // seconds it turns one refused write into a 502 for the page that
+        // triggered it. The retry timer drain() set is still pending, and the
+        // in-memory copy is still authoritative, so nothing is dropped.
+        if (pendingData) break;
       }
       return !pendingData;
     },
