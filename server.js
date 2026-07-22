@@ -717,7 +717,18 @@ async function authApi(req, res, url) {
     a.hash = auth.hashPassword(password);
     a.gen = (a.gen ?? 0) + 1;
     a.setAt = new Date().toISOString();
+
+    // Wait for this one, unlike every other save. A password that did not
+    // persist is not a slow save, it is a locked door: the next request reloads
+    // without it and sends you straight back to this screen, having apparently
+    // done nothing at all. Say so instead.
     saveData(db);
+    if (!(await store.flush({ timeoutMs: 5000 }))) {
+      return send(res, 500, {
+        error: `Could not save the password — the storage is not writable (${store.describe()}). `
+             + `Check /health: if it reports "file" on a hosted site, the storage settings did not reach the server.`,
+      });
+    }
     grantSession(res, req);
     return send(res, 200, { ok: true });
   }
