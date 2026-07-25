@@ -38,6 +38,8 @@ const S = {
   mapLayer: 'circles',  // circles | coverage | demand | gap
   hunterPick: new Set(),  // areaIds a client has asked about, on Auto Hunter
   hunterFocus: new Set(), // contactIds spotlighted on Auto Hunter
+  hunterMode: 'routes',   // routes | districts
+  hunterDistrict: null,   // district clicked and kept, on the district map
   heat: null,           // blob size + intensity; filled from localStorage at boot
 };
 
@@ -186,6 +188,10 @@ function showServerDown() {
 
 async function refresh() {
   S.data = await api('GET', '/data');
+  // Which autos cross which district is derived from the routes, so it stops
+  // being true the moment anybody's areas change. The boundaries themselves are
+  // fixed and stay loaded.
+  DISTRICT_ROUTES = null;
   paintBadges();
 }
 
@@ -293,6 +299,9 @@ const MapView = {
   lines(items, handlers) { return this.impl.lines(items, handlers); },
   setLineHighlight(group) { return this.impl.setLineHighlight(group); },
   clearLines() { return this.impl.clearLines(); },
+  shapes(items, handlers) { return this.impl.shapes(items, handlers); },
+  setShapeHighlight(key, style) { return this.impl.setShapeHighlight(key, style); },
+  clearShapes() { return this.impl.clearShapes(); },
   fit() { return this.impl.fit(); },
   fitTo(points) { return this.impl.fitTo(points); },
   heat(points) { return this.impl.heat(points, S.heat); },
@@ -614,6 +623,57 @@ const LeafletImpl = {
     this.hovered = null;
   },
 
+  /**
+   * Filled shapes — district boundaries. These sit under the routes, in their
+   * own pane, so a district can be hovered without the lines drawn over it
+   * stealing the pointer.
+   */
+  shapes(items, handlers = {}) {
+    this.clearShapes();
+    if (!this.shapePane) {
+      this.shapePane = this.map.createPane('huntShapes');
+      this.shapePane.style.zIndex = 350; // above tiles (200), below overlay (400)
+    }
+    this.shapeIndex = new Map();
+    for (const it of items) {
+      const poly = L.polygon(it.rings.map((r) => r.map(([lng, lat]) => [lat, lng])), {
+        pane: 'huntShapes',
+        color: it.stroke,
+        weight: it.weight,
+        opacity: it.strokeOpacity,
+        fillColor: it.fill,
+        fillOpacity: it.fillOpacity,
+        interactive: true,
+      });
+      poly._base = {
+        color: it.stroke, weight: it.weight, opacity: it.strokeOpacity,
+        fillColor: it.fill, fillOpacity: it.fillOpacity,
+      };
+      this.shapeIndex.set(it.key, poly);
+      const at = (e) => ({ x: e.originalEvent.clientX, y: e.originalEvent.clientY });
+      poly.on('mouseover', (e) => handlers.onEnter?.(it.key, at(e)));
+      poly.on('mousemove', (e) => handlers.onMove?.(at(e)));
+      poly.on('mouseout', () => handlers.onLeave?.());
+      poly.on('click', () => handlers.onClick?.(it.key));
+      poly.addTo(this.map);
+      this.shapes_ = this.shapes_ ?? [];
+      this.shapes_.push(poly);
+    }
+  },
+
+  setShapeHighlight(key, style) {
+    for (const [k, poly] of this.shapeIndex ?? []) {
+      poly.setStyle(k === key ? { ...poly._base, ...style } : poly._base);
+      if (k === key) poly.bringToFront();
+    }
+  },
+
+  clearShapes() {
+    for (const p of this.shapes_ ?? []) p.remove();
+    this.shapes_ = [];
+    this.shapeIndex = new Map();
+  },
+
   fit() {
     const b = this.layer.getBounds?.();
     if (b?.isValid()) this.map.fitBounds(b.pad(0.12));
@@ -766,6 +826,56 @@ const GoogleImpl = {
     this.polys = [];
     this.lineIndex = new Map();
     this.hovered = null;
+  },
+
+  /** Filled shapes — district boundaries, drawn beneath the routes. */
+  shapes(items, handlers = {}) {
+    this.clearShapes();
+    this.shapeIndex = new Map();
+    this.shapes_ = items.map((it) => {
+      const poly = new google.maps.Polygon({
+        paths: it.rings.map((r) => r.map(([lng, lat]) => ({ lat, lng }))),
+        map: this.map,
+        strokeColor: it.stroke,
+        strokeWeight: it.weight,
+        strokeOpacity: it.strokeOpacity,
+        fillColor: it.fill,
+        fillOpacity: it.fillOpacity,
+        clickable: true,
+        zIndex: 0,
+      });
+      poly._base = {
+        strokeColor: it.stroke, strokeWeight: it.weight, strokeOpacity: it.strokeOpacity,
+        fillColor: it.fill, fillOpacity: it.fillOpacity, zIndex: 0,
+      };
+      this.shapeIndex.set(it.key, poly);
+      const at = (e) => ({ x: e.domEvent?.clientX ?? 0, y: e.domEvent?.clientY ?? 0 });
+      poly.addListener('mouseover', (e) => handlers.onEnter?.(it.key, at(e)));
+      poly.addListener('mousemove', (e) => handlers.onMove?.(at(e)));
+      poly.addListener('mouseout', () => handlers.onLeave?.());
+      poly.addListener('click', () => handlers.onClick?.(it.key));
+      return poly;
+    });
+  },
+
+  setShapeHighlight(key, style) {
+    for (const [k, poly] of this.shapeIndex ?? []) {
+      if (k !== key) { poly.setOptions(poly._base); continue; }
+      poly.setOptions({
+        ...poly._base,
+        ...(style.color ? { strokeColor: style.color } : {}),
+        ...(style.weight ? { strokeWeight: style.weight } : {}),
+        ...(style.fillOpacity != null ? { fillOpacity: style.fillOpacity } : {}),
+        ...(style.opacity != null ? { strokeOpacity: style.opacity } : {}),
+        zIndex: 2,
+      });
+    }
+  },
+
+  clearShapes() {
+    for (const p of this.shapes_ ?? []) p.setMap(null);
+    this.shapes_ = [];
+    this.shapeIndex = new Map();
   },
 
   /**
@@ -1947,6 +2057,96 @@ const HUNTER_COLORS = [
   '#00c2e0', '#8b5cf6', '#ec4899', '#3b82f6', '#f43f5e', '#14b8a6',
   '#a855f7', '#0ea5e9', '#fb7185', '#22d3ee', '#c084fc', '#60a5fa',
 ];
+/**
+ * DISTRICTS — Delhi's eleven revenue districts, as real boundaries.
+ *
+ * An auto "travels through" a district if any of its areas sits inside that
+ * district, or if any of the straight lines between its areas crosses it. The
+ * second case is the whole point: a driver who works Rohini and Karol Bagh
+ * passes through North West and Central without either being on his list, and a
+ * client asking for a district cares about that.
+ *
+ * The lines are straight rather than real roads, so this claims what the rest of
+ * the screen claims — that his patch spans those two places — and no more.
+ */
+let DISTRICTS = null;      // loaded once, lazily, from /districts.json
+let DISTRICT_ROUTES = null; // district name -> Set of contact ids, cached
+
+async function loadDistricts() {
+  if (DISTRICTS) return DISTRICTS;
+  const res = await fetch('/districts.json');
+  if (!res.ok) throw new Error(`Could not load the district boundaries (${res.status}).`);
+  const geo = await res.json();
+  DISTRICTS = geo.features.map((f) => {
+    // One bounding box per district turns most of the work below into a single
+    // comparison. Without it this is a million edge tests on every repaint.
+    let minLng = 1e9, minLat = 1e9, maxLng = -1e9, maxLat = -1e9;
+    for (const ring of f.geometry.coordinates) {
+      for (const [lng, lat] of ring) {
+        if (lng < minLng) minLng = lng;
+        if (lng > maxLng) maxLng = lng;
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+      }
+    }
+    return { name: f.properties.name, rings: f.geometry.coordinates, bbox: [minLng, minLat, maxLng, maxLat] };
+  });
+  return DISTRICTS;
+}
+
+/** Ray casting. Rings are [lng, lat] pairs, as GeoJSON stores them. */
+function pointInRings(lng, lat, rings) {
+  let inside = false;
+  for (const ring of rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [xi, yi] = ring[i];
+      const [xj, yj] = ring[j];
+      if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+const ccw = (ax, ay, bx, by, cx, cy) => (cy - ay) * (bx - ax) > (by - ay) * (cx - ax);
+
+/** Do segments AB and CD cross? Endpoints touching counts, which is what we want. */
+const segmentsCross = (ax, ay, bx, by, cx, cy, dx, dy) =>
+  ccw(ax, ay, cx, cy, dx, dy) !== ccw(bx, by, cx, cy, dx, dy)
+  && ccw(ax, ay, bx, by, cx, cy) !== ccw(ax, ay, bx, by, dx, dy);
+
+function segmentTouchesDistrict(a, b, d) {
+  // Reject on bounding boxes first — most segments are nowhere near most
+  // districts, and this is the difference between instant and sluggish.
+  const [minLng, minLat, maxLng, maxLat] = d.bbox;
+  if (Math.max(a.lng, b.lng) < minLng || Math.min(a.lng, b.lng) > maxLng) return false;
+  if (Math.max(a.lat, b.lat) < minLat || Math.min(a.lat, b.lat) > maxLat) return false;
+
+  if (pointInRings(a.lng, a.lat, d.rings) || pointInRings(b.lng, b.lat, d.rings)) return true;
+  // Both ends outside: it still crosses if it cuts the boundary anywhere.
+  for (const ring of d.rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      if (segmentsCross(a.lng, a.lat, b.lng, b.lat, ring[j][0], ring[j][1], ring[i][0], ring[i][1])) return true;
+    }
+  }
+  return false;
+}
+
+/** district name -> Set of contact ids whose patch touches it. Computed once. */
+function districtRoutes(routes) {
+  if (DISTRICT_ROUTES) return DISTRICT_ROUTES;
+  const out = new Map(DISTRICTS.map((d) => [d.name, new Set()]));
+  for (const d of DISTRICTS) {
+    const hit = out.get(d.name);
+    for (const r of routes) {
+      // An area of his inside the district settles it without touching a line.
+      if (r.nodes.some((n) => pointInRings(n.lng, n.lat, d.rings))) { hit.add(r.contact.id); continue; }
+      if (r.pairs.some(([a, b]) => segmentTouchesDistrict(a, b, d))) hit.add(r.contact.id);
+    }
+  }
+  DISTRICT_ROUTES = out;
+  return out;
+}
+
 const HUNTER_START = '#10b981'; // where he begins his day — where the autos sit
 const HUNTER_PICK = '#f59e0b';  // an area you asked about
 const HUNTER_THRU = '#00c2e0';  // he passes through, but does not start here
@@ -1989,6 +2189,19 @@ function viewHunter() {
   // hits everything the client asked for rises above one who hits a single area.
   // That ordering is the whole answer when a client names three places at once.
   const matching = () => {
+    // On the district map the question is "who crosses this shape", so the
+    // answer comes from geometry rather than from a list of ticked areas. The
+    // rest of the screen — the map highlighting, the driver cards — does not
+    // need to know which of the two asked.
+    if (S.hunterMode === 'districts') {
+      const name = liveDistrict();
+      if (!name || !DISTRICTS) return [];
+      const ids = districtRoutes(routes).get(name) ?? new Set();
+      return routes
+        .filter((r) => ids.has(r.contact.id))
+        .map((r) => ({ r, hits: 1 }))
+        .sort((a, b) => b.r.autos - a.r.autos || a.r.contact.name.localeCompare(b.r.contact.name));
+    }
     if (!sel.size) return [];
     return routes
       .map((r) => ({ r, hits: [...sel].filter((id) => r.areaIds.has(id)).length }))
@@ -2011,6 +2224,11 @@ function viewHunter() {
           <div class="field-hint" id="hunt-sub"></div>
         </div>
 
+        <div class="seg" id="hunt-mode">
+          <button data-mode="routes" title="Every auto's patch, area by area">Routes</button>
+          <button data-mode="districts" title="Delhi's 11 districts — hover one to see who crosses it">District map</button>
+        </div>
+
         ${askedCount === 0 ? `
           <div class="note warn">
             <strong>No driver has been asked yet where he works.</strong>
@@ -2020,13 +2238,23 @@ function viewHunter() {
             <button class="btn btn-sm btn-primary btn-block" style="margin-top:8px" data-go="drivers">Open drivers</button>
           </div>` : ''}
 
-        <div>
-          <div class="card-title" style="margin-bottom:6px">Which areas does the client want?</div>
-          <input type="text" id="hunt-q" placeholder="Search an area…" autocomplete="off">
-          <div class="hunt-picked" id="hunt-picked"></div>
+        <div id="hunt-areas-wrap">
+          <div>
+            <div class="card-title" style="margin-bottom:6px">Which areas does the client want?</div>
+            <input type="text" id="hunt-q" placeholder="Search an area…" autocomplete="off">
+            <div class="hunt-picked" id="hunt-picked"></div>
+          </div>
+          <div class="hunt-list" id="hunt-areas"></div>
         </div>
 
-        <div class="hunt-list" id="hunt-areas"></div>
+        <div id="hunt-districts-wrap" hidden>
+          <div class="card-title" style="margin-bottom:6px">Which district does the client want?</div>
+          <div class="field-hint" style="margin-bottom:8px">
+            Hover a district on the map to light it up and mark every auto whose
+            patch crosses it. Click to keep it.
+          </div>
+          <div class="hunt-list" id="hunt-dist-list"></div>
+        </div>
 
         <div class="hunt-rule"></div>
 
@@ -2049,7 +2277,7 @@ function viewHunter() {
           <div class="legend-row"><span class="legend-swatch" style="background:${HUNTER_START}"></span>Starts his day here — where the autos sit</div>
           <div class="legend-row"><span class="legend-swatch" style="background:${HUNTER_THRU}"></span>Passes through</div>
           <div class="legend-row"><span class="legend-swatch" style="background:${HUNTER_PICK}"></span>An area you picked</div>
-          <div class="legend-row dim">Thicker line = more autos. Numbers on the dots are autos.</div>
+          <div class="legend-row dim" id="hunt-legend-foot">Thicker line = more autos. Numbers on the dots are autos.</div>
         </div>
         <div class="note" id="hunt-note"></div>
       </div>
@@ -2068,8 +2296,10 @@ function viewHunter() {
     // Focusing one auto by name is a narrower question than "who serves this
     // area", so when both are active the spotlight wins the map. The answer
     // panel below still belongs to the areas — the two questions stay separate.
-    const on_ = (id) => (focus.size ? focus.has(id) : sel.size ? hits.has(id) : false);
-    const dim_ = (id) => (focus.size ? !focus.has(id) : sel.size ? !hits.has(id) : false);
+    // `hits` rather than `sel` so this works whichever question was asked —
+    // ticked areas, or a district being pointed at.
+    const on_ = (id) => (focus.size ? focus.has(id) : hits.size ? hits.has(id) : false);
+    const dim_ = (id) => (focus.size ? !focus.has(id) : hits.size ? !hits.has(id) : false);
 
     // Which areas the spotlit autos actually touch, so everywhere else can step
     // back and leave the answer standing on its own.
@@ -2178,6 +2408,96 @@ function viewHunter() {
     const el = $('#hunt-tip');
     if (el) el.hidden = true;
     if (MapView.ready && MapView.impl) MapView.setLineHighlight(null);
+  };
+
+  // ---- districts
+
+  const DISTRICT_FILL = '#00c2e0';
+  const DISTRICT_LIT = '#f59e0b';
+
+  /** Whichever district is being pointed at, or the one clicked and kept. */
+  const liveDistrict = () => hoverDistrict ?? S.hunterDistrict;
+  let hoverDistrict = null;
+
+  const paintDistricts = () => {
+    if (!MapView.ready || !MapView.impl || !DISTRICTS) return;
+    const byDist = districtRoutes(routes);
+    MapView.shapes(DISTRICTS.map((d) => {
+      const on = liveDistrict() === d.name;
+      return {
+        key: d.name,
+        rings: d.rings,
+        stroke: on ? DISTRICT_LIT : DISTRICT_FILL,
+        weight: on ? 3 : 1.2,
+        strokeOpacity: on ? 1 : 0.55,
+        fill: on ? DISTRICT_LIT : DISTRICT_FILL,
+        // Barely there until pointed at. Eleven filled shapes at any real
+        // opacity would bury the routes they exist to explain.
+        fillOpacity: on ? 0.22 : (byDist.get(d.name)?.size ? 0.05 : 0.02),
+      };
+    }), {
+      onEnter: (name, pt) => { hoverDistrict = name; showDistrictTip(name, pt); paintDistrictState(); },
+      onMove: moveTip,
+      onLeave: () => { hoverDistrict = null; hideTip(); paintDistrictState(); },
+      onClick: (name) => {
+        // Clicking keeps it, so you can move the mouse away and still read the
+        // list. Clicking the same one again lets it go.
+        S.hunterDistrict = S.hunterDistrict === name ? null : name;
+        paintAll();
+      },
+    });
+  };
+
+  /**
+   * Restyle only — no rebuild. Repainting eleven polygons on every mouse-over
+   * would tear the map apart under the cursor.
+   */
+  const paintDistrictState = () => {
+    const name = liveDistrict();
+    if (MapView.ready && MapView.impl) {
+      MapView.setShapeHighlight(name, {
+        color: DISTRICT_LIT, weight: 3, opacity: 1, fillColor: DISTRICT_LIT, fillOpacity: 0.22,
+      });
+      // The lines crossing it are the answer, so they light up with it.
+      paintMap();
+    }
+    paintDistList();
+    paintResult();
+  };
+
+  const showDistrictTip = (name, pt) => {
+    const el = $('#hunt-tip');
+    if (!el) return;
+    const ids = districtRoutes(routes).get(name) ?? new Set();
+    const autos = routes.filter((r) => ids.has(r.contact.id)).reduce((n, r) => n + r.autos, 0);
+    el.innerHTML = `
+      <div class="hunt-tip-name" style="border-color:${DISTRICT_LIT}">${esc(name)}</div>
+      <div class="hunt-tip-sub">${autos} auto${autos === 1 ? '' : 's'} from ${ids.size} driver${ids.size === 1 ? '' : 's'} cross${ids.size === 1 ? 'es' : ''} it</div>
+      ${ids.size ? '' : '<div class="hunt-tip-sub">Nobody you have recorded goes through here.</div>'}`;
+    el.hidden = false;
+    moveTip(pt);
+  };
+
+  const paintDistList = () => {
+    const box = $('#hunt-dist-list');
+    if (!box || !DISTRICTS) return;
+    const byDist = districtRoutes(routes);
+    const live = liveDistrict();
+    box.innerHTML = DISTRICTS
+      .map((d) => ({ d, ids: byDist.get(d.name) ?? new Set() }))
+      .map(({ d, ids }) => ({
+        d, ids, autos: routes.filter((r) => ids.has(r.contact.id)).reduce((n, r) => n + r.autos, 0),
+      }))
+      .sort((a, b) => b.autos - a.autos || a.d.name.localeCompare(b.d.name))
+      .map(({ d, autos }) => `
+        <button class="hunt-area ${live === d.name ? 'on' : ''}" data-dist="${esc(d.name)}">
+          <span class="hunt-area-name">${esc(d.name)}</span>
+          <span class="hunt-area-n ${autos ? '' : 'zero'}">${autos || '—'}</span>
+        </button>`).join('');
+    $$('#hunt-dist-list [data-dist]').forEach((b) => (b.onclick = () => {
+      S.hunterDistrict = S.hunterDistrict === b.dataset.dist ? null : b.dataset.dist;
+      paintAll();
+    }));
   };
 
   // ---- side panel painting
@@ -2290,12 +2610,14 @@ function viewHunter() {
 
   const paintResult = () => {
     const box = $('#hunt-result');
-    if (!sel.size) { box.innerHTML = ''; return; }
+    const district = S.hunterMode === 'districts' ? liveDistrict() : null;
+    const asked = S.hunterMode === 'districts' ? !!district : sel.size > 0;
+    if (!asked) { box.innerHTML = ''; return; }
 
     const hits = matching();
     if (!hits.length) {
       box.innerHTML = `<div class="note warn">
-        <strong>No auto covers ${sel.size === 1 ? 'that area' : 'any of those areas'} yet.</strong>
+        <strong>No auto ${district ? `crosses ${esc(district)}` : `covers ${sel.size === 1 ? 'that area' : 'any of those areas'}`} yet.</strong>
         ${askedCount < activeCount
           ? `Only ${askedCount} of ${activeCount} drivers have been asked where they work, so this is a gap in what you have recorded as much as a gap on the road.`
           : 'Every driver has been asked, so this is a real gap — nobody you have works there.'}
@@ -2308,11 +2630,14 @@ function viewHunter() {
 
     box.innerHTML = `
       <div class="card-title" style="margin-bottom:6px">
-        ${autos} auto${autos === 1 ? '' : 's'} · ${hits.length} driver${hits.length === 1 ? '' : 's'}
+        ${autos} auto${autos === 1 ? '' : 's'} · ${hits.length} driver${hits.length === 1 ? '' : 's'}${
+          district ? ` through ${esc(district)}` : ''}
       </div>
-      ${sel.size > 1
-        ? `<div class="field-hint" style="margin-bottom:8px">${all} cover${all === 1 ? 's' : ''} all ${sel.size} areas. Sorted by how many they cover.</div>`
-        : ''}
+      ${district
+        ? '<div class="field-hint" style="margin-bottom:8px">Their patch either sits in this district or crosses it. Biggest fleets first.</div>'
+        : sel.size > 1
+          ? `<div class="field-hint" style="margin-bottom:8px">${all} cover${all === 1 ? 's' : ''} all ${sel.size} areas. Sorted by how many they cover.</div>`
+          : ''}
       <div class="hunt-drivers">
         ${hits.map(({ r, hits: n }) => `
           <div class="hunt-driver ${focus.has(r.contact.id) ? 'on' : ''}"
@@ -2323,7 +2648,7 @@ function viewHunter() {
             </div>
             <div class="hunt-driver-sub">
               ${r.contact.phone ? `<a class="tel" href="tel:${esc(r.contact.phone)}">${esc(r.contact.phone)}</a> · ` : ''}
-              ${sel.size > 1 ? `covers ${n} of ${sel.size} · ` : ''}works ${r.areaIds.size} area${r.areaIds.size === 1 ? '' : 's'}
+              ${!district && sel.size > 1 ? `covers ${n} of ${sel.size} · ` : ''}works ${r.areaIds.size} area${r.areaIds.size === 1 ? '' : 's'}
             </div>
             <div class="hunt-driver-areas">${r.nodes
               .map((a) => `<span class="${sel.has(a.id) ? 'hit' : ''}">${esc(a.name)}</span>`)
@@ -2340,14 +2665,50 @@ function viewHunter() {
     }));
   };
 
+  const paintMode = () => {
+    const districts = S.hunterMode === 'districts';
+    $$('#hunt-mode button').forEach((b) => b.classList.toggle('on', b.dataset.mode === S.hunterMode));
+    $('#hunt-areas-wrap').hidden = districts;
+    $('#hunt-districts-wrap').hidden = !districts;
+    $('#hunt-legend-foot').textContent = districts
+      ? 'A district lights up as you point at it, and so does every auto whose patch crosses it.'
+      : 'Thicker line = more autos. Numbers on the dots are autos.';
+  };
+
   const paintAll = () => {
+    paintMode();
     paintPicked();
     paintAreaList();
     paintFocused();
     paintFound();
+    if (S.hunterMode === 'districts') paintDistList();
     paintResult();
     paintMap();
+    if (MapView.ready && MapView.impl) {
+      if (S.hunterMode === 'districts') paintDistricts();
+      else MapView.clearShapes();
+    }
     wireCommon();
+  };
+
+  /**
+   * The boundaries are 40KB and only this one mode needs them, so they are
+   * fetched the first time somebody asks for the district map rather than on
+   * every visit to the screen.
+   */
+  const enterDistricts = async () => {
+    S.hunterMode = 'districts';
+    paintMode();
+    if (!DISTRICTS) {
+      $('#hunt-dist-list').innerHTML = '<div class="dim" style="font-size:12px">Loading district boundaries…</div>';
+      try {
+        await loadDistricts();
+      } catch (err) {
+        $('#hunt-dist-list').innerHTML = `<div class="note warn">${esc(err.message)}</div>`;
+        return;
+      }
+    }
+    paintAll();
   };
 
   function toggle(id) {
@@ -2358,6 +2719,14 @@ function viewHunter() {
 
   $('#hunt-q').oninput = paintAreaList;
   $('#hunt-dq').oninput = paintFound;
+  $$('#hunt-mode button').forEach((b) => (b.onclick = () => {
+    if (b.dataset.mode === 'districts') return enterDistricts();
+    S.hunterMode = 'routes';
+    hoverDistrict = null;
+    hideTip();
+    paintAll();
+  }));
+  paintMode();
   paintPicked();
   paintAreaList();
   paintFocused();
@@ -2370,8 +2739,16 @@ function viewHunter() {
   (async () => {
     try {
       const kind = await MapView.mount($('#map'));
-      MapView.repaint = async () => { paintMap(); };
+      // Both layers, so a Google key rejected mid-session rebuilds whichever
+      // mode was on screen rather than dropping back to bare routes.
+      MapView.repaint = async () => {
+        paintMap();
+        if (S.hunterMode === 'districts') { await loadDistricts(); paintDistricts(); }
+      };
       paintMap();
+      // Coming back to the screen with the district map still selected has to
+      // redraw the boundaries — the map was rebuilt from scratch just now.
+      if (S.hunterMode === 'districts') await enterDistricts();
       MapView.fit();
       $('#hunt-banner').innerHTML = askedCount
         ? `${routes.reduce((n, r) => n + r.autos, 0)} autos mapped across ${autosByArea.size} areas · <span class="dim">click an area to see who covers it</span>`

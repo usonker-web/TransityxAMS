@@ -109,7 +109,8 @@ buttons switch to heat. See *The heatmap* below.
 **Auto Hunter** — a client names an area; this says which autos go there. Every
 driver's marked areas are joined by straight lines, all of them at once, so the
 corridors your fleet actually covers show up where the lines pile on top of each
-other. See *Auto Hunter* below.
+other. Switch to the **District map** to ask the same question of Delhi's eleven
+districts instead. See *Auto Hunter* below.
 
 **Needs Coverage** — the areas flagged as underserved, worst first. The count in
 the menu is the critical ones, and it stays visible even with the group closed.
@@ -272,6 +273,32 @@ The number on a dot is **autos**. Its colour says what kind of presence:
 | **Cyan** | They pass through, but nobody is based here |
 | **Amber** | An area you picked |
 | **Grey** | Nobody |
+
+### The district map
+
+The **District map** button swaps the area picker for Delhi's eleven revenue
+districts, drawn as their real boundaries.
+
+Point at one and it lights up — and so does **every auto whose patch crosses
+it**, with the rest of the fleet dimming away. The panel lists them, biggest
+fleets first. Click to keep a district selected so you can move the mouse off
+and still read the list.
+
+An auto counts as crossing a district if one of its areas sits inside it, **or
+if any line between its areas passes over it**. That second case is the whole
+point: a driver working Rohini and Karol Bagh goes through North West and
+Central without either being on his list, and a client asking for a district
+cares about that. The lines are straight rather than real roads, so this claims
+exactly what the rest of the screen claims — that his patch spans those two
+places — and nothing more.
+
+> **Where the boundaries come from.** `public/districts.json` — the eleven
+> current districts including Shahdara and South East, from
+> [datta07/INDIAN-SHAPEFILES](https://github.com/datta07/INDIAN-SHAPEFILES)
+> (MIT), derived from Census of India / LGD boundaries. Simplified for the
+> browser: 8,114 points down to 2,022, 318 KB down to 40 KB, with the worst
+> district's shape moving by 0.05% — invisible at city scale. It is fetched only
+> when the district map is first opened.
 
 ### It only draws drivers who have been asked
 
