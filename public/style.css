@@ -97,10 +97,17 @@ body {
 .brand { padding: 0 8px 20px; }
 .brand-mark { font-size: 19px; font-weight: 700; letter-spacing: -.5px; }
 .brand-mark span { color: var(--teal-hi); }
-.brand-sub {
-  font-size: 10px; text-transform: uppercase; letter-spacing: 1.4px;
-  color: var(--dim); margin-top: 2px;
-}
+/* No uppercase here any more: the product name is deliberately mixed-case, and
+   text-transform would flatten AutoR PlannR into AUTOR PLANNR. */
+.brand-sub { font-size: 12.5px; letter-spacing: .2px; margin-top: 3px; }
+
+/* The product name, shared by the sidebar and the login card so the two cannot
+   drift apart. The two R's carry the logo's own blue, which is what ties the
+   name to the transityx mark above it instead of reading as a caption under it.
+   --teal-hi rather than a literal blue, so it darkens correctly on the light
+   theme along with everything else. */
+.wordmark { color: var(--text); }
+.wordmark .wm-r { color: var(--teal-hi); }
 
 .nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .nav-item {
