@@ -547,9 +547,9 @@ Neither of those facts fits inside a single person's record.
 
 So autos are their own records now, on the **Vehicles** screen. Each one has:
 
-- a **plate** — the model is read from it, so getting the plate right fills the
-  model in for free
-- an **owner**, picked from your Drivers list
+- a **plate** — this *is* the auto. It is how they are identified, searched and
+  matched back to the spreadsheet, and the model is read straight off it
+- an **owner**, picked from your Drivers list — or nobody yet
 - **however many drivers** it actually has, each with a shift, also picked from
   your list — so *"who drives this"* is a link to a real man with a phone number,
   not three spellings of one name
@@ -561,6 +561,29 @@ A driver's page now **lists** his autos and links to them, rather than trying to
 hold their details. That is the split: his page is about him, the auto's page is
 about the auto. **+ Add an auto for him** on his page files a new one under him
 straight away.
+
+### Collect first, link later
+
+Autos and drivers turn up separately in the field — a plate copied off a
+windscreen at a parking stand, a driver met on the road — and which of them
+belongs to whom is often not known that day. So they are recorded separately:
+
+1. **Add the auto.** The plate is the only thing asked for. Owner and driver are
+   there if you know them and **left blank if you do not** — an empty field is
+   honest, and a pre-filled name is a guess that reads as a fact once saved.
+2. **Add the driver** on the Drivers screen, whenever you meet him.
+3. **Link them later**, from the auto's page. Set the owner, add the drivers,
+   change either at any time. Unlinking is just as easy.
+
+The **Any link** filter is the queue of work: *No owner yet*, *Nobody at all*,
+or *Fully linked*. The count of autos still waiting is in the line under the
+title.
+
+> The plate is required, and only once. Adding a plate that is already on record
+> is refused with a pointer to the existing one — two records for one auto is not
+> a duplicate, it is a contradiction, and they would disagree about who owns it
+> the moment either was edited. (The spreadsheet does contain a few; the importer
+> reports those rather than silently merging them.)
 
 ### The two auto counts, and why they differ
 

@@ -29,7 +29,7 @@ const S = {
   filter: {
     drivers: '', driverZone: '', driverKind: '', driverModel: '', areaZone: '', areaDemand: '',
     coverZone: '', coverLevel: '',
-    vehicleQ: '', vehicleModel: '', vehicleShift: '', vehicleStatus: '',
+    vehicleQ: '', vehicleModel: '', vehicleShift: '', vehicleStatus: '', vehicleLink: '',
     // Plan filters live here, not in the DOM: optimising re-renders the view,
     // and a zone sweep that silently forgets your zone is maddening.
     planQ: '', planZone: '', planListOnly: false, planUntapped: false,
@@ -2633,6 +2633,7 @@ function viewVehicles() {
         <div class="page-title">Vehicles</div>
         <div class="page-sub">${all.length} autos on record ·
           ${s.vehiclesDualShift} on a dual shift ·
+          ${s.vehiclesNoOwner ?? 0} not linked to an owner ·
           ${s.vehiclesNoDriver} with nobody driving them yet</div>
       </div>
       <div class="page-actions"><button class="btn btn-primary" id="v-new">+ Add an auto</button></div>
@@ -2656,6 +2657,12 @@ function viewVehicles() {
         <option value="dual" ${S.filter.vehicleShift === 'dual' ? 'selected' : ''}>Dual shift</option>
         <option value="single" ${S.filter.vehicleShift === 'single' ? 'selected' : ''}>One driver</option>
         <option value="none" ${S.filter.vehicleShift === 'none' ? 'selected' : ''}>No driver yet</option>
+      </select>
+      <select id="v-link" title="Autos still waiting to be matched to people">
+        <option value="">Any link</option>
+        <option value="noowner" ${S.filter.vehicleLink === 'noowner' ? 'selected' : ''}>No owner yet</option>
+        <option value="nobody" ${S.filter.vehicleLink === 'nobody' ? 'selected' : ''}>Nobody at all</option>
+        <option value="linked" ${S.filter.vehicleLink === 'linked' ? 'selected' : ''}>Fully linked</option>
       </select>
       <select id="v-status">
         <option value="">Any status</option>
@@ -2690,6 +2697,9 @@ function viewVehicles() {
         if (S.filter.vehicleShift === 'dual' && !vehicleIsDual(v)) return false;
         if (S.filter.vehicleShift === 'single' && (vehicleIsDual(v) || !(v.drivers ?? []).length)) return false;
         if (S.filter.vehicleShift === 'none' && (v.drivers ?? []).length) return false;
+        if (S.filter.vehicleLink === 'noowner' && v.ownerId) return false;
+        if (S.filter.vehicleLink === 'nobody' && (v.ownerId || (v.drivers ?? []).length)) return false;
+        if (S.filter.vehicleLink === 'linked' && (!v.ownerId || !(v.drivers ?? []).length)) return false;
         if (S.filter.vehicleStatus && (v.status ?? 'active') !== S.filter.vehicleStatus) return false;
         if (!q) return true;
         return (
@@ -2715,7 +2725,7 @@ function viewVehicles() {
       <tr class="clickable" data-vehicle="${v.id}">
         <td class="strong mono">${esc(v.number || '— no plate —')}</td>
         <td>${model ? `<span class="chip chip-dim">${esc(model)}</span>` : '<span class="dim">—</span>'}</td>
-        <td class="muted">${owner ? esc(owner.name) : '<span class="chip chip-red">no owner</span>'}</td>
+        <td class="muted">${owner ? esc(owner.name) : '<span class="chip chip-amber">not linked</span>'}</td>
         <td class="muted">${
           drivers.length
             ? drivers.map((d) => esc(d.contact.name)).join(', ')
@@ -2736,6 +2746,7 @@ function viewVehicles() {
   $('#v-q').oninput = (e) => { S.filter.vehicleQ = e.target.value; paint(); };
   $('#v-model').onchange = (e) => { S.filter.vehicleModel = e.target.value; paint(); };
   $('#v-shift').onchange = (e) => { S.filter.vehicleShift = e.target.value; paint(); };
+  $('#v-link').onchange = (e) => { S.filter.vehicleLink = e.target.value; paint(); };
   $('#v-status').onchange = (e) => { S.filter.vehicleStatus = e.target.value; paint(); };
   $('#v-new').onclick = () => newVehicle();
   $$('[data-vsort]').forEach((th) => (th.onclick = () => {
@@ -2783,7 +2794,7 @@ function openVehicle(id) {
       <div>
         <div class="drawer-title mono">${esc(v.number || '— no plate —')}
           ${model ? `<span class="chip chip-teal">Model ${esc(model)}</span>` : ''}</div>
-        <div class="drawer-sub">${esc(vehicleOwner(v)?.name ?? 'no owner')}${
+        <div class="drawer-sub">${vehicleOwner(v) ? esc(vehicleOwner(v).name) : 'not linked to anyone yet'}${
           v.source === 'excel' ? ` · from the sheet, row ${v.excelRow ?? '?'}` : ' · added here'}</div>
       </div>
       <button class="drawer-x">×</button>
@@ -2800,9 +2811,10 @@ function openVehicle(id) {
       </div>
       <div class="field"><label class="field-label">Owner</label>
         <select id="v-owner">
+          <option value="">— not linked yet —</option>
           ${contacts.map((c) => `<option value="${c.id}" ${c.id === v.ownerId ? 'selected' : ''}>${esc(c.name)}${(c.fleetSize ?? 0) > 1 ? ` (${c.fleetSize} autos)` : ''}</option>`).join('')}
         </select>
-        <div class="field-hint">Whose auto it is. Not necessarily who drives it.</div>
+        <div class="field-hint">Whose auto it is — not necessarily who drives it. Blank is fine until you know.</div>
       </div>
       <div class="row">
         <div class="field"><label class="field-label">Passing date</label>
@@ -2919,31 +2931,37 @@ function openVehicle(id) {
   };
 }
 
+/**
+ * Adding an auto asks for the plate and nothing else.
+ *
+ * Autos and drivers are collected separately in the field — a plate copied off a
+ * windscreen at a parking stand, a driver met on the road — and which of them
+ * belongs to whom is often not known until later. So owner and driver are
+ * offered here and left blank by default: an empty field is honest, and a
+ * pre-selected name is a guess that looks like a fact the moment it is saved.
+ */
 function newVehicle(ownerId = null) {
   const contacts = S.data.contacts.slice().sort((a, b) => a.name.localeCompare(b.name));
-  if (!contacts.length) return toast('Add a driver first — an auto needs an owner', 'bad');
+  const who = (sel) => `<option value="">— not linked yet —</option>`
+    + contacts.map((c) => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${esc(c.name)}${(c.fleetSize ?? 0) > 1 ? ` (${c.fleetSize} autos)` : ''}</option>`).join('');
 
   openDrawer(`
     <div class="drawer-head">
       <div><div class="drawer-title">Add an auto</div>
-        <div class="drawer-sub">One vehicle, with its own details</div></div>
+        <div class="drawer-sub">The plate is all that is needed — link it to people later</div></div>
       <button class="drawer-x">×</button>
     </div>
     <div class="field"><label class="field-label">Number plate</label>
-      <input type="text" id="nv-number" placeholder="DL1RW0740">
-      <div class="field-hint">Leave it blank if you do not have it yet — everything else can still be recorded.</div>
+      <input type="text" id="nv-number" placeholder="DL1RW0740" autocomplete="off">
+      <div class="field-hint">This is how the auto is identified everywhere else, so it is the one thing needed now.</div>
     </div>
     <div class="field"><label class="field-label">Owner</label>
-      <select id="nv-owner">
-        ${contacts.map((c) => `<option value="${c.id}" ${c.id === ownerId ? 'selected' : ''}>${esc(c.name)}${(c.fleetSize ?? 0) > 1 ? ` (${c.fleetSize} autos)` : ''}</option>`).join('')}
-      </select>
+      <select id="nv-owner">${who(ownerId)}</select>
+      <div class="field-hint">Leave it blank if you do not know yet. It can be attached any time from the auto's page.</div>
     </div>
     <div class="field"><label class="field-label">Driver</label>
-      <select id="nv-driver">
-        <option value="">— not known yet —</option>
-        ${contacts.map((c) => `<option value="${c.id}" ${c.id === ownerId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
-      </select>
-      <div class="field-hint">Who actually drives it. Add a second driver, and mark the dual shift, on the auto's page after saving.</div>
+      <select id="nv-driver">${who(null)}</select>
+      <div class="field-hint">Whoever actually drives it — often not the owner. A second driver, and the dual shift, go on the auto's page.</div>
     </div>
     <div class="row">
       <div class="field"><label class="field-label">Passing date</label><input type="date" id="nv-passing"></div>
@@ -2951,22 +2969,35 @@ function newVehicle(ownerId = null) {
     </div>
     <div class="drawer-foot"><button class="btn btn-primary btn-block" id="nv-save">Add the auto</button></div>`);
 
+  $('#nv-number').focus();
+
   $('#nv-save').onclick = async () => {
+    const number = $('#nv-number').value.trim();
+    if (!number) return toast('A number plate is needed — that is how an auto is identified', 'bad');
     const driverId = $('#nv-driver').value;
-    const created = await api('POST', '/vehicles', {
-      number: $('#nv-number').value.trim(),
-      ownerId: $('#nv-owner').value,
-      drivers: driverId ? [{ contactId: driverId, shift: '' }] : [],
-      passingDate: $('#nv-passing').value,
-      finance: $('#nv-finance').value.trim(),
-    });
+    let created;
+    try {
+      created = await api('POST', '/vehicles', {
+        number,
+        ownerId: $('#nv-owner').value || null,
+        drivers: driverId ? [{ contactId: driverId, shift: '' }] : [],
+        passingDate: $('#nv-passing').value,
+        finance: $('#nv-finance').value.trim(),
+      });
+    } catch {
+      // api() has already said what went wrong — most likely this plate is
+      // already on record. Leave the form up so the number can be corrected
+      // rather than throwing away everything else typed into it.
+      return;
+    }
+    if (!created?.id) return;
     await refresh();
     closeDrawer();
     toast('Auto added', 'good');
     go(S.view);
     // Straight into the full page: adding one is usually the start of filling
     // it in, not the end.
-    if (created?.id) openVehicle(created.id);
+    openVehicle(created.id);
   };
 }
 

@@ -657,6 +657,9 @@ function summary(data, stats = flagAreas(areaStats(data), heatPoints(data))) {
     vehicles: data.vehicles.length,
     vehiclesDualShift: data.vehicles.filter((v) => isDualShift(v)).length,
     vehiclesNoDriver: data.vehicles.filter((v) => !(v.drivers ?? []).length).length,
+    // Autos collected before anyone worked out whose they are — the queue of
+    // work the Vehicles screen exists to clear.
+    vehiclesNoOwner: data.vehicles.filter((v) => !v.ownerId).length,
   };
 }
 
@@ -1056,13 +1059,35 @@ async function api(req, res, url) {
 
     if (method === 'POST') {
       const body = await readBody(req);
-      const ownerId = body.ownerId ?? null;
-      if (!ownerId || !db.contacts.some((c) => c.id === ownerId)) {
-        return send(res, 400, { error: 'Pick who owns this auto.' });
+      const number = cleanNumber(body.number);
+
+      // The plate IS the auto — it is how they are identified, searched and
+      // matched back to the spreadsheet. A record without one is a row you can
+      // never point at again, so this is the one field that is required.
+      if (!number) return send(res, 400, { error: 'A number plate is needed — that is how an auto is identified.' });
+
+      // Two records for one plate is a contradiction, not a duplicate: they
+      // would disagree about who owns it the moment either is edited. (The
+      // spreadsheet does contain a few, which the importer reports rather than
+      // silently merging — but there is no reason to add more by hand.)
+      const already = db.vehicles.find((v) => v.number && v.number === number);
+      if (already) {
+        const owner = db.contacts.find((c) => c.id === already.ownerId);
+        return send(res, 409, {
+          error: `${number} is already on record${owner ? ` under ${owner.name}` : ''}. Open that one instead of adding it twice.`,
+          id: already.id,
+        });
       }
+
+      // Owner is deliberately optional. Autos and drivers are collected
+      // separately in the field — a plate written down at a parking stand, a
+      // driver met on the road — and linked up later once you know which is
+      // whose. Forcing a name here would mean inventing one.
+      const ownerId = body.ownerId && db.contacts.some((c) => c.id === body.ownerId) ? body.ownerId : null;
+
       const vehicle = {
         id: `veh_${uid()}`,
-        number: cleanNumber(body.number),
+        number,
         raw: '',
         ownerId,
         drivers: cleanDrivers(body.drivers),
@@ -1089,8 +1114,17 @@ async function api(req, res, url) {
       const v = db.vehicles.find((x) => x.id === id);
       if (!v) return send(res, 404, { error: 'Auto not found.' });
 
-      if ('number' in body) v.number = cleanNumber(body.number);
-      if ('ownerId' in body && db.contacts.some((c) => c.id === body.ownerId)) v.ownerId = body.ownerId;
+      if ('number' in body) {
+        const n = cleanNumber(body.number);
+        const clash = n && db.vehicles.find((x) => x.id !== v.id && x.number === n);
+        if (clash) return send(res, 409, { error: `${n} is already on another record.`, id: clash.id });
+        v.number = n;
+      }
+      // Empty unlinks. An auto can go back to having no known owner just as
+      // easily as it can gain one — that is the point of linking them later.
+      if ('ownerId' in body) {
+        v.ownerId = body.ownerId && db.contacts.some((c) => c.id === body.ownerId) ? body.ownerId : null;
+      }
       if ('drivers' in body) v.drivers = cleanDrivers(body.drivers);
       if ('dualShift' in body) v.dualShift = !!body.dualShift;
       if ('areaId' in body) {
