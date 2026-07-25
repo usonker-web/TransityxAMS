@@ -106,7 +106,7 @@ body {
    name to the transityx mark above it instead of reading as a caption under it.
    --teal-hi rather than a literal blue, so it darkens correctly on the light
    theme along with everything else. */
-.wordmark { color: var(--text); }
+.wordmark { color: var(--text); font-weight: 700; }
 .wordmark .wm-r { color: var(--teal-hi); }
 
 .nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
@@ -114,11 +114,13 @@ body {
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; width: 100%; padding: 9px 10px;
   background: none; border: 0; border-radius: 6px;
-  color: var(--muted); font: inherit; font-size: 13.5px;
+  color: var(--muted); font: inherit; font-size: 13.5px; font-weight: 600;
   cursor: pointer; text-align: left;
 }
 .nav-item:hover { background: var(--panel); color: var(--text); }
-.nav-item.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
+/* With every row bold, weight alone no longer says which one you are on — so
+   the active row goes a step heavier and keeps its panel and its teal marker. */
+.nav-item.active { background: var(--panel-2); color: var(--text); font-weight: 800; }
 .nav-item.active .nav-label { box-shadow: -14px 0 0 -11px var(--teal-hi); }
 
 /* ---- grouped navigation
@@ -126,7 +128,9 @@ body {
    A group header is a switch, not a destination: it never carries the active
    highlight, so "where am I" always points at exactly one row. */
 .nav-group { display: flex; flex-direction: column; gap: 2px; }
-.nav-head { color: var(--dim); font-size: 12px; font-weight: 600; letter-spacing: .3px; }
+/* A step heavier again than the rows beneath it, so a group still reads as the
+   heading of the things under it now that those are bold too. */
+.nav-head { color: var(--dim); font-size: 12px; font-weight: 800; letter-spacing: .3px; }
 .nav-head:hover { color: var(--text); }
 .nav-caret {
   width: 0; height: 0; flex: none; margin-left: auto;
