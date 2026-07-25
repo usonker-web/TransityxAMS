@@ -201,11 +201,34 @@ some order — he never said what order he drives them in, and picking one would
 draw a specific road he may never take. Joining all the pairs claims only what he
 did say: *these places are my patch.*
 
-All drivers are drawn at once and deliberately left faint, so where the lines
-pile up is where your fleet genuinely concentrates. Picking an area lights its
-autos amber and dims the rest — the rest stay visible on purpose, because the
-shape of the whole fleet is the context that makes one answer worth anything.
-Thicker line means more autos on it.
+**Each colour is one auto.** Two patches crossing the same ground read as two
+things rather than one tangle. There are more drivers than colours, so they
+repeat — the colour is there to separate neighbours at a glance, and hovering is
+what names the auto. It is stable: the pink one stays the pink one, today and
+next month.
+
+**Hover any line** and that auto's whole patch lifts out of the crowd — all of
+its segments, not just the one under the cursor, because an auto is a patch and
+not a line. A card follows the cursor with his name, how many autos, his phone,
+his number plates, and everywhere he goes.
+
+All of it is drawn **dormant** by default, so the map reads as a quiet web rather
+than a shout, and where the lines pile up is where your fleet genuinely
+concentrates. Picking an area brings its autos forward in their own colours and
+dims the rest — the rest stay visible on purpose, because the shape of the whole
+fleet is the context that makes one answer worth anything. Thicker line means
+more autos on it.
+
+### The dots
+
+The number on a dot is **autos**. Its colour says what kind of presence:
+
+| Colour | Means |
+|---|---|
+| **Green** | Autos **start their day** here — where the vehicles actually sit, and where an ad gets applied |
+| **Cyan** | They pass through, but nobody is based here |
+| **Amber** | An area you picked |
+| **Grey** | Nobody |
 
 ### It only draws drivers who have been asked
 

@@ -284,7 +284,8 @@ const MapView = {
     }
   },
   markers(items) { return this.impl.markers(items); },
-  lines(items) { return this.impl.lines(items); },
+  lines(items, handlers) { return this.impl.lines(items, handlers); },
+  setLineHighlight(group) { return this.impl.setLineHighlight(group); },
   clearLines() { return this.impl.clearLines(); },
   fit() { return this.impl.fit(); },
   heat(points) { return this.impl.heat(points, S.heat); },
@@ -514,19 +515,25 @@ const LeafletImpl = {
     this.heatLayer = null;
   },
 
-  mount(el, opts = {}) {
-    this.map = L.map(el, {
-      zoomControl: true,
-      attributionControl: true,
-      // Auto Hunter draws a polyline per pair of areas per driver, which runs to
-      // thousands of them. As individual SVG paths that is thousands of DOM
-      // nodes and a map that stutters on every pan; on one canvas it is one.
-      preferCanvas: !!opts.preferCanvas,
-    }).setView([28.63, 77.22], 11);
+  mount(el) {
+    this.map = L.map(el, { zoomControl: true, attributionControl: true })
+      .setView([28.63, 77.22], 11);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
       attribution: '&copy; OpenStreetMap &copy; CARTO',
       maxZoom: 19,
     }).addTo(this.map);
+    /**
+     * Lines get their own canvas renderer, for two reasons.
+     *
+     * Auto Hunter draws a segment per pair of areas per driver, which runs to
+     * roughly a thousand. As separate SVG paths that is a thousand DOM nodes and
+     * a map that stutters on every pan; on one canvas it is one node.
+     *
+     * `tolerance` is the other half. These lines are deliberately thin, and a
+     * 2px line is something you chase with the mouse rather than hover. Six
+     * pixels of slack makes them catchable without drawing them any fatter.
+     */
+    this.lineRenderer = L.canvas({ tolerance: 6, padding: 0.3 });
     // Lines first, so they sit under the markers. Leaflet puts markers in their
     // own pane above the overlay pane anyway, but the order here says the intent.
     this.lineLayer = L.layerGroup().addTo(this.map);
@@ -552,22 +559,52 @@ const LeafletImpl = {
     }
   },
 
-  /** Straight segments. `interactive: false` keeps thousands of them off the hit-test. */
-  lines(items) {
+  /**
+   * Straight segments. Items carrying a `group` become hoverable and are indexed
+   * by it, so highlighting one auto later restyles only its handful of segments
+   * rather than rebuilding all thousand.
+   */
+  lines(items, handlers = {}) {
     this.lineLayer.clearLayers();
+    this.lineIndex = new Map();
+    this.hovered = null;
+
     for (const it of items) {
-      L.polyline([[it.a.lat, it.a.lng], [it.b.lat, it.b.lng]], {
+      const pl = L.polyline([[it.a.lat, it.a.lng], [it.b.lat, it.b.lng]], {
         color: it.color,
         weight: it.weight,
         opacity: it.opacity,
-        interactive: false,
+        interactive: !!it.group,
+        renderer: this.lineRenderer,
         lineCap: 'round',
-      }).addTo(this.lineLayer);
+      });
+      if (it.group) {
+        pl._base = { color: it.color, weight: it.weight, opacity: it.opacity };
+        if (!this.lineIndex.has(it.group)) this.lineIndex.set(it.group, []);
+        this.lineIndex.get(it.group).push(pl);
+        const at = (e) => ({ x: e.originalEvent.clientX, y: e.originalEvent.clientY });
+        pl.on('mouseover', (e) => handlers.onEnter?.(it.group, at(e)));
+        pl.on('mousemove', (e) => handlers.onMove?.(at(e)));
+        pl.on('mouseout', () => handlers.onLeave?.());
+      }
+      pl.addTo(this.lineLayer);
+    }
+  },
+
+  /** Lift one auto's whole patch out of the crowd; null puts everything back. */
+  setLineHighlight(group) {
+    for (const pl of this.lineIndex?.get(this.hovered) ?? []) pl.setStyle(pl._base);
+    this.hovered = group;
+    for (const pl of this.lineIndex?.get(group) ?? []) {
+      pl.setStyle({ weight: pl._base.weight + 2.5, opacity: 1 });
+      pl.bringToFront();
     }
   },
 
   clearLines() {
     this.lineLayer?.clearLayers();
+    this.lineIndex = new Map();
+    this.hovered = null;
   },
 
   fit() {
@@ -664,26 +701,54 @@ const GoogleImpl = {
   },
 
   /**
-   * Google has no canvas equivalent of Leaflet's preferCanvas, so these are real
-   * Polyline objects. `clickable: false` is what keeps a few thousand of them
-   * from being hit-tested on every mouse move, which is the difference between
-   * a map that pans and one that crawls.
+   * Google has no canvas equivalent of Leaflet's renderer, so these are real
+   * Polyline objects — and no `tolerance` either, so a hoverable line has to be
+   * genuinely wide enough to hit. The view keeps the dormant weight at 2.5+ for
+   * that reason rather than drawing hairlines nobody can catch.
    */
-  lines(items) {
+  lines(items, handlers = {}) {
     this.clearLines();
-    this.polys = items.map((it) => new google.maps.Polyline({
-      path: [{ lat: it.a.lat, lng: it.a.lng }, { lat: it.b.lat, lng: it.b.lng }],
-      map: this.map,
-      strokeColor: it.color,
-      strokeWeight: it.weight,
-      strokeOpacity: it.opacity,
-      clickable: false,
-    }));
+    this.lineIndex = new Map();
+
+    this.polys = items.map((it) => {
+      const pl = new google.maps.Polyline({
+        path: [{ lat: it.a.lat, lng: it.a.lng }, { lat: it.b.lat, lng: it.b.lng }],
+        map: this.map,
+        strokeColor: it.color,
+        strokeWeight: it.weight,
+        strokeOpacity: it.opacity,
+        // Only grouped lines are hit-tested. Anything else stays out of the way
+        // of every mouse move the map handles.
+        clickable: !!it.group,
+        zIndex: 1,
+      });
+      if (it.group) {
+        pl._base = { strokeColor: it.color, strokeWeight: it.weight, strokeOpacity: it.opacity, zIndex: 1 };
+        if (!this.lineIndex.has(it.group)) this.lineIndex.set(it.group, []);
+        this.lineIndex.get(it.group).push(pl);
+        const at = (e) => ({ x: e.domEvent?.clientX ?? 0, y: e.domEvent?.clientY ?? 0 });
+        pl.addListener('mouseover', (e) => handlers.onEnter?.(it.group, at(e)));
+        pl.addListener('mousemove', (e) => handlers.onMove?.(at(e)));
+        pl.addListener('mouseout', () => handlers.onLeave?.());
+      }
+      return pl;
+    });
+  },
+
+  /** Lift one auto's whole patch out of the crowd; null puts everything back. */
+  setLineHighlight(group) {
+    for (const pl of this.lineIndex?.get(this.hovered) ?? []) pl.setOptions(pl._base);
+    this.hovered = group;
+    for (const pl of this.lineIndex?.get(group) ?? []) {
+      pl.setOptions({ strokeWeight: pl._base.strokeWeight + 2.5, strokeOpacity: 1, zIndex: 900 });
+    }
   },
 
   clearLines() {
     for (const p of this.polys ?? []) p.setMap(null);
     this.polys = [];
+    this.lineIndex = new Map();
+    this.hovered = null;
   },
 
   /**
@@ -1779,8 +1844,33 @@ function hunterRoutes() {
   return { routes, askedCount, activeCount };
 }
 
-const HUNTER_LINE = '#00c2e0';
-const HUNTER_HOT = '#f59e0b';
+/**
+ * One colour per auto, so two patches crossing the same ground read as two
+ * things and not one tangle.
+ *
+ * A fixed palette rather than a hue computed from the id: generated hues drift
+ * into muddy olives and near-blacks that vanish on this map, and there is no
+ * way to keep them clear of the two hues that already mean something here —
+ * green for where he starts, amber for the areas you picked.
+ *
+ * With more drivers than colours these repeat, and that is fine. The colour is
+ * there to separate neighbours at a glance; hovering is what names the auto.
+ */
+const HUNTER_COLORS = [
+  '#00c2e0', '#8b5cf6', '#ec4899', '#3b82f6', '#f43f5e', '#14b8a6',
+  '#a855f7', '#0ea5e9', '#fb7185', '#22d3ee', '#c084fc', '#60a5fa',
+];
+const HUNTER_START = '#10b981'; // where he begins his day — where the autos sit
+const HUNTER_PICK = '#f59e0b';  // an area you asked about
+const HUNTER_THRU = '#00c2e0';  // he passes through, but does not start here
+
+function hunterColor(id) {
+  // Stable per driver: the same auto keeps its colour between repaints and
+  // between visits, so "the pink one" stays the pink one.
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return HUNTER_COLORS[h % HUNTER_COLORS.length];
+}
 
 function viewHunter() {
   const { routes, askedCount, activeCount } = hunterRoutes();
@@ -1790,11 +1880,16 @@ function viewHunter() {
   // about is vehicles carrying the ad, not people signed.
   const autosByArea = new Map();
   const driversByArea = new Map();
+  // Where autos are BASED, as opposed to merely passing through. That is the
+  // more actionable of the two: it is where you can expect to find the vehicle
+  // standing, which is where an ad actually gets applied.
+  const startAutos = new Map();
   for (const r of routes) {
     for (const id of r.areaIds) {
       autosByArea.set(id, (autosByArea.get(id) ?? 0) + r.autos);
       driversByArea.set(id, (driversByArea.get(id) ?? 0) + 1);
     }
+    if (r.startAreaId) startAutos.set(r.startAreaId, (startAutos.get(r.startAreaId) ?? 0) + r.autos);
   }
 
   // Sorted by how many of the SELECTED areas each driver covers, so a driver who
@@ -1815,6 +1910,7 @@ function viewHunter() {
       <div class="map-wrap">
         <div id="map"></div>
         <div class="map-banner" id="hunt-banner">Loading map…</div>
+        <div class="hunt-tip" id="hunt-tip" hidden></div>
       </div>
       <div class="map-side">
         <div>
@@ -1842,9 +1938,14 @@ function viewHunter() {
         <div id="hunt-result"></div>
 
         <div class="map-legend">
-          <div class="legend-row"><span class="legend-line" style="background:${HUNTER_LINE}"></span>An auto's patch — two areas one driver covers</div>
-          <div class="legend-row"><span class="legend-line" style="background:${HUNTER_HOT}"></span>Matches the areas you picked</div>
-          <div class="legend-row dim">Thicker line = more autos. Darker = more autos on the same stretch.</div>
+          <div class="legend-row">
+            <span class="legend-line legend-multi"></span>
+            <span><strong>Each colour is one auto.</strong> Hover a line to see whose it is.</span>
+          </div>
+          <div class="legend-row"><span class="legend-swatch" style="background:${HUNTER_START}"></span>Starts his day here — where the autos sit</div>
+          <div class="legend-row"><span class="legend-swatch" style="background:${HUNTER_THRU}"></span>Passes through</div>
+          <div class="legend-row"><span class="legend-swatch" style="background:${HUNTER_PICK}"></span>An area you picked</div>
+          <div class="legend-row dim">Thicker line = more autos. Numbers on the dots are autos.</div>
         </div>
         <div class="note" id="hunt-note"></div>
       </div>
@@ -1867,39 +1968,96 @@ function viewHunter() {
       // away the reason to look at this screen at all — the shape of where the
       // whole fleet goes is the context that makes one answer meaningful.
       const dim = sel.size > 0 && !on;
+      // Fleet size, flattened. A 10-auto owner should read as heavier than a
+      // solo driver without being ten times the width and swallowing the map.
+      // The floor is deliberate: Google has no hover tolerance, so a line has to
+      // be wide enough to actually catch with a mouse.
+      const weight = 1.8 + Math.min(2.6, Math.sqrt(r.autos) * 0.7);
       for (const [a, b] of r.pairs) {
         segs.push({
           a, b,
-          color: on ? HUNTER_HOT : HUNTER_LINE,
-          // Fleet size, flattened. A 10-auto owner should read as heavier than a
-          // solo driver without being ten times the width and swallowing the map.
-          weight: on ? 2 + Math.min(5, Math.sqrt(r.autos)) : 1 + Math.min(3, Math.sqrt(r.autos) * 0.7),
-          opacity: on ? 0.95 : dim ? 0.06 : 0.22,
+          color: hunterColor(r.contact.id),
+          weight: on ? weight + 1 : weight,
+          // Dormant by default so the map reads as a quiet web rather than a
+          // shout; hovering is what brings one auto forward.
+          opacity: on ? 0.9 : dim ? 0.1 : 0.3,
+          // The whole patch shares one group, so hovering any segment of it
+          // lights all of it — an auto is a patch, not a line.
+          group: r.contact.id,
         });
       }
     }
-    // Selected last, so a highlighted route is never buried under the faint ones.
+    // Brightest last, so a matched route is never buried under the faint ones.
     segs.sort((x, y) => x.opacity - y.opacity);
-    MapView.lines(segs);
+    MapView.lines(segs, { onEnter: showTip, onMove: moveTip, onLeave: hideTip });
 
     MapView.markers(S.data.areaStats
       .filter((a) => a.lat && a.lng)
       .map((a) => {
         const autos = autosByArea.get(a.id) ?? 0;
+        const starts = startAutos.get(a.id) ?? 0;
         const picked = sel.has(a.id);
         return {
           id: a.id,
           lat: a.lat,
           lng: a.lng,
-          color: picked ? HUNTER_HOT : autos ? HUNTER_LINE : '#3a4859',
+          // Picked beats based beats passed-through. Green outranks the plain
+          // coverage colour because "the autos live here" is the stronger fact.
+          color: picked ? HUNTER_PICK : starts ? HUNTER_START : autos ? HUNTER_THRU : '#3a4859',
           size: picked ? 20 : autos ? 15 : 8,
           label: autos ? String(autos) : '',
-          title: `${a.name} — ${autos} auto${autos === 1 ? '' : 's'} from ${driversByArea.get(a.id) ?? 0} driver(s)`,
+          title: `${a.name} — ${autos} auto${autos === 1 ? '' : 's'} from `
+               + `${driversByArea.get(a.id) ?? 0} driver(s)`
+               + (starts ? `, ${starts} starting here` : ''),
           // Clicking the map is the fastest way to answer "and this one?", so a
           // marker toggles the area rather than opening a popup about it.
           onClick: () => toggle(a.id),
         };
       }));
+  };
+
+  // ---- hover: name the auto under the cursor
+
+  const showTip = (group, pt) => {
+    const r = routes.find((x) => x.contact.id === group);
+    const el = $('#hunt-tip');
+    if (!r || !el) return;
+    const c = r.contact;
+    const plates = (c.vehicles ?? []).map((v) => v.number).filter(Boolean);
+    el.innerHTML = `
+      <div class="hunt-tip-name" style="border-color:${hunterColor(c.id)}">${esc(c.name)}</div>
+      <div class="hunt-tip-sub">${r.autos} auto${r.autos === 1 ? '' : 's'}${
+        c.phone ? ` · ${esc(c.phone)}` : ''}</div>
+      ${plates.length ? `<div class="hunt-tip-plates">${
+        plates.slice(0, 3).map((p) => `<span>${esc(p)}</span>`).join('')
+      }${plates.length > 3 ? `<span class="more">+${plates.length - 3}</span>` : ''}</div>` : ''}
+      <div class="hunt-tip-areas">${r.nodes.map((n) => `<span${
+        sel.has(n.id) ? ' class="hit"' : ''}>${esc(n.name)}</span>`).join('')}</div>`;
+    el.hidden = false;
+    moveTip(pt);
+    MapView.setLineHighlight(group);
+  };
+
+  // Kept inside the window: near the right edge of a 296px panel the tooltip
+  // would otherwise open off-screen exactly where the densest lines are.
+  const moveTip = (pt) => {
+    const el = $('#hunt-tip');
+    if (!el || el.hidden) return;
+    const pad = 16;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    let x = pt.x + pad;
+    let y = pt.y + pad;
+    if (x + w > window.innerWidth - 8) x = pt.x - w - pad;
+    if (y + h > window.innerHeight - 8) y = pt.y - h - pad;
+    el.style.left = `${Math.max(8, x)}px`;
+    el.style.top = `${Math.max(8, y)}px`;
+  };
+
+  const hideTip = () => {
+    const el = $('#hunt-tip');
+    if (el) el.hidden = true;
+    if (MapView.ready && MapView.impl) MapView.setLineHighlight(null);
   };
 
   // ---- side panel painting
@@ -2003,9 +2161,7 @@ function viewHunter() {
 
   (async () => {
     try {
-      // preferCanvas: thousands of separate SVG paths is what makes a map like
-      // this stutter; on one canvas the same lines pan smoothly.
-      const kind = await MapView.mount($('#map'), { preferCanvas: true });
+      const kind = await MapView.mount($('#map'));
       MapView.repaint = async () => { paintMap(); };
       paintMap();
       MapView.fit();
