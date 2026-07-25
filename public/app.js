@@ -2742,7 +2742,11 @@ function openContact(id) {
       <div class="field-hint">Where the record came from is kept as a fact, not a setting — it is what lets a value be traced back to the sheet.</div>
     </div>
 
-    <div class="drawer-foot"><button class="btn btn-primary btn-block" id="c-save">Save</button></div>`);
+    <div class="drawer-foot">
+      <button class="btn btn-primary" id="c-save">Save</button>
+      <div class="sp"></div>
+      <button class="btn btn-danger btn-sm" id="c-del">Delete</button>
+    </div>`);
 
   wireAreaPick($('#c-work'));
   wireZoneChips($('#c-zones'), $('#c-work'), areas);
@@ -2767,6 +2771,23 @@ function openContact(id) {
     await refresh();
     closeDrawer();
     toast('Saved', 'good');
+    go(S.view);
+  };
+
+  $('#c-del').onclick = async () => {
+    // Spell out what actually goes, and say the quiet part about the sheet.
+    // "Are you sure?" on its own invites a reflex Yes, and this is the one
+    // action in the app that cannot be walked back.
+    const autos = c.fleetSize > 0 ? `, his ${c.fleetSize} auto${c.fleetSize > 1 ? 's' : ''}` : '';
+    const fromSheet = String(c.source ?? '').startsWith('excel')
+      ? '\n\nHe came from the Excel sheet, so his row there will be skipped from now on — he will not come back on the next re-import.'
+      : '';
+    if (!confirm(`Delete ${c.name}?\n\nHis record${autos} and everything collected about where he works will be removed. This cannot be undone.${fromSheet}`)) return;
+
+    await api('DELETE', `/contacts/${id}`);
+    await refresh();
+    closeDrawer();
+    toast(`${c.name} deleted`);
     go(S.view);
   };
 }

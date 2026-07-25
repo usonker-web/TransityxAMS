@@ -235,7 +235,13 @@ function buildAreas(driverRows, captainRows, visitRows, existing) {
   return { areas: [...byName.values()], unresolved: [...unresolved], merged, added };
 }
 
-function buildContacts(driverRows, captainRows, areas, existing) {
+/**
+ * @param removed  phone numbers of drivers deleted in the app. The sheet still
+ *                 has their rows and would rebuild them here, making every
+ *                 deletion temporary — so those rows are skipped. See the
+ *                 DELETE handler in server.js.
+ */
+function buildContacts(driverRows, captainRows, areas, existing, removed = []) {
   const areaIdByName = new Map(areas.map((a) => [a.name, a.id]));
   const areaIdOf = (raw) => {
     const c = resolveArea(raw);
@@ -352,12 +358,22 @@ function buildContacts(driverRows, captainRows, areas, existing) {
     });
   }
 
+  // Drivers deleted in the app. Matched by phone because that is the same key
+  // the merge below uses to recognise a sheet row as someone we already know.
+  // Done after the captains pass so that a deleted driver who is also listed as
+  // a captain stays deleted rather than coming back through the other sheet.
+  const blocked = new Set(removed);
+  const kept = blocked.size
+    ? contacts.filter((c) => !(c.phones ?? []).some((p) => blocked.has(p)))
+    : contacts;
+  const skipped = contacts.length - kept.length;
+
   // Merge over anything the user already edited in the app.
   const existingByPhone = new Map();
   for (const c of existing) for (const p of c.phones ?? [c.phone]) if (p) existingByPhone.set(p, c);
 
   let updated = 0;
-  const merged = contacts.map((fresh) => {
+  const merged = kept.map((fresh) => {
     const prior = fresh.phones.map((p) => existingByPhone.get(p)).find(Boolean);
     if (!prior) return fresh;
     updated++;
@@ -405,7 +421,7 @@ function buildContacts(driverRows, captainRows, areas, existing) {
     (c) => c.source !== 'excel' && c.source !== 'excel:captains' && !(c.phones ?? []).some((p) => freshPhones.has(p))
   );
 
-  return { contacts: [...merged, ...appOnly], updated };
+  return { contacts: [...merged, ...appOnly], updated, skipped };
 }
 
 // ------------------------------------------------------------------ main
@@ -424,8 +440,10 @@ function main() {
   const captainRows = parseCaptains(book.get('Captians') ?? []);
   const visitRows = parseVisitList(book.get('Visit list') ?? []);
 
+  const removedPhones = prior.meta?.removedPhones ?? [];
+
   const { areas, unresolved, merged, added } = buildAreas(driverRows, captainRows, visitRows, prior.areas ?? []);
-  const { contacts, updated } = buildContacts(driverRows, captainRows, areas, prior.contacts ?? []);
+  const { contacts, updated, skipped } = buildContacts(driverRows, captainRows, areas, prior.contacts ?? [], removedPhones);
 
   const data = {
     contacts,
@@ -440,6 +458,10 @@ function main() {
       importedFrom: path.basename(src),
       importedAt: new Date().toISOString(),
       excelDriverRows: driverRows.length,
+      // Carried across deliberately. This object is rebuilt from scratch on
+      // every import, so leaving this out would drop the list of deleted
+      // drivers and let the very next import undo every deletion.
+      removedPhones,
     },
   };
 
@@ -470,6 +492,9 @@ function main() {
   console.log(`    ${areas.length} areas (${areas.filter((a) => a.onVisitList).length} on the visit list, ${areas.length - withDrivers.size} with no drivers yet)`);
   console.log(`    ${contacts.filter((c) => c.isCaptain).length} captains`);
   if (updated) console.log(`    ${updated} existing contacts refreshed (your notes and visit logs kept)`);
+  // Say it out loud. A row silently vanishing from the sheet's count is exactly
+  // what would send someone hunting for a parsing bug that isn't there.
+  if (skipped) console.log(`    ${skipped} sheet row(s) skipped — deleted in the app (delete them from the sheet too, or they stay listed here every time)`);
   const keptWork = contacts.filter((c) => c.startAreaId || c.bestAreaId || (c.workAreaIds ?? []).length).length;
   if (keptWork) console.log(`    ${keptWork} drivers kept their "where he works" answers (not in the sheet — collected in the app)`);
 

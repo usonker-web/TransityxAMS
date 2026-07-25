@@ -827,6 +827,13 @@ async function api(req, res, url) {
         excelRows: [],
         createdAt: new Date().toISOString(),
       };
+      // Adding someone back lifts the import block on his number (see DELETE
+      // below), so the spreadsheet can fill his record in again rather than
+      // being skipped forever because of a deletion that has been undone.
+      if (contact.phones.length && db.meta?.removedPhones?.length) {
+        db.meta.removedPhones = db.meta.removedPhones.filter((p) => !contact.phones.includes(p));
+      }
+
       db.contacts.push(contact);
       saveData(db);
       return send(res, 201, contact);
@@ -881,6 +888,31 @@ async function api(req, res, url) {
       }
       saveData(db);
       return send(res, 200, c);
+    }
+
+    if (id && method === 'DELETE') {
+      const i = db.contacts.findIndex((x) => x.id === id);
+      if (i < 0) return send(res, 404, { error: 'Contact not found.' });
+      const [gone] = db.contacts.splice(i, 1);
+
+      // The importer rebuilds the roster from the spreadsheet and matches its
+      // rows to records BY PHONE, whatever the record's own source says. So a
+      // delete that only removed the object would last exactly until the next
+      // "Re-import Excel" and then quietly undo itself — the worst kind of bug
+      // here, because the driver reappears days later and looks like the app
+      // inventing data.
+      //
+      // Remembering the numbers he was matched by is what lets the importer
+      // skip those rows instead. Same principle as areaIdOverride: a decision
+      // made in the app has to survive the sheet, or the sheet silently wins.
+      const phones = (gone.phones?.length ? gone.phones : [gone.phone]).filter(Boolean);
+      if (phones.length) {
+        db.meta = db.meta ?? {};
+        db.meta.removedPhones = [...new Set([...(db.meta.removedPhones ?? []), ...phones])];
+      }
+
+      saveData(db);
+      return send(res, 200, { ok: true, name: gone.name });
     }
   }
 

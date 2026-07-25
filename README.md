@@ -87,7 +87,9 @@ buttons switch to heat. See *The heatmap* below.
 demand where you have nobody. See *Where Delhi needs autos* below.
 
 **Drivers** — all 166. Search by name, phone, or vehicle number. Filter to just
-fleet owners, captains, shared numbers, or **one auto model**.
+fleet owners, captains, shared numbers, or **one auto model**. Open anyone to
+edit him; **Delete** at the bottom of that panel removes him for good — see
+*Deleting a driver* below, because it interacts with the spreadsheet.
 
 **Auto Models** — the fleet split by model, read off the number plates. See below.
 
@@ -437,6 +439,25 @@ the app that was never in the sheet stays too.
 
 It reads `%USERPROFILE%\Downloads\rama bhaiya drivers list and city data.xlsx`.
 For a file elsewhere: `node import.js "C:\path\to\file.xlsx"`
+
+### Deleting a driver
+
+Open him on the **Drivers** screen and press **Delete** at the bottom. He goes,
+along with his autos and everything collected about where he works. There is no
+undo.
+
+Because the re-import above matches on phone number, deleting someone the sheet
+still lists would normally last only until the next `Re-import Excel.bat` — and
+he would reappear days later looking like the app invented him. So a deletion is
+remembered: his number is kept in a small list, and the importer skips his row
+from then on. The import report says how many rows it skipped for this reason.
+
+Two things follow from that:
+
+- **Tidy the sheet too when you can.** The row stays there being skipped every
+  time otherwise. Nothing breaks, it is just clutter.
+- **Adding him back un-deletes him.** Add a driver with the same number and the
+  block lifts, so the sheet fills his record in again on the next import.
 
 ---
 
