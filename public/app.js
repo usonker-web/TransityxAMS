@@ -31,6 +31,7 @@ const S = {
   },
   mapColor: 'coverage',
   mapLayer: 'circles',  // circles | coverage | demand | gap
+  hunterPick: new Set(), // areaIds a client has asked about, on Auto Hunter
   heat: null,           // blob size + intensity; filled from localStorage at boot
 };
 
@@ -207,6 +208,9 @@ const MapView = {
   impl: null,
   ready: false,
   fallbackReason: '',
+  // Set by whichever screen mounted the map, so a Google failure can rebuild
+  // that screen rather than a hardcoded one. Cleared on every mount.
+  repaint: null,
 
   /**
    * Mount Google when a key is set, otherwise Leaflet — but NEVER end up with a
@@ -217,6 +221,7 @@ const MapView = {
    */
   async mount(el, opts = {}) {
     this.fallbackReason = '';
+    this.repaint = null;
     // Stale from a previous visit to this page: the old map object points at a
     // DOM node that no longer exists, so nothing may treat it as usable until
     // this mount actually succeeds.
@@ -256,10 +261,18 @@ const MapView = {
       this.impl = LeafletImpl;
       await LeafletImpl.load();
       LeafletImpl.mount(el, opts);
-      this.markers(areaMarkers());
-      // Carry the heat layer across the swap — losing it silently would look
-      // like the heatmap itself had broken.
-      if (S.mapLayer && S.mapLayer !== 'circles') await this.heat(heatData(S.mapLayer));
+      // Each map screen paints something different, so the screen that mounted
+      // this map is the only thing that knows how to put it back. Without this
+      // the swap repainted the Coverage Map's circles over whatever was actually
+      // on screen — a wrong picture is worse than the rejected key it replaced.
+      if (this.repaint) {
+        await this.repaint();
+      } else {
+        this.markers(areaMarkers());
+        // Carry the heat layer across the swap — losing it silently would look
+        // like the heatmap itself had broken.
+        if (S.mapLayer && S.mapLayer !== 'circles') await this.heat(heatData(S.mapLayer));
+      }
       this.fit();
       const note = $('#map-note');
       if (note) note.innerHTML = `<strong>Fell back to the free map.</strong> ${esc(this.fallbackReason)}`;
@@ -271,6 +284,8 @@ const MapView = {
     }
   },
   markers(items) { return this.impl.markers(items); },
+  lines(items) { return this.impl.lines(items); },
+  clearLines() { return this.impl.clearLines(); },
   fit() { return this.impl.fit(); },
   heat(points) { return this.impl.heat(points, S.heat); },
   tuneHeat() { return this.impl.tuneHeat(S.heat); },
@@ -499,12 +514,22 @@ const LeafletImpl = {
     this.heatLayer = null;
   },
 
-  mount(el) {
-    this.map = L.map(el, { zoomControl: true, attributionControl: true }).setView([28.63, 77.22], 11);
+  mount(el, opts = {}) {
+    this.map = L.map(el, {
+      zoomControl: true,
+      attributionControl: true,
+      // Auto Hunter draws a polyline per pair of areas per driver, which runs to
+      // thousands of them. As individual SVG paths that is thousands of DOM
+      // nodes and a map that stutters on every pan; on one canvas it is one.
+      preferCanvas: !!opts.preferCanvas,
+    }).setView([28.63, 77.22], 11);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
       attribution: '&copy; OpenStreetMap &copy; CARTO',
       maxZoom: 19,
     }).addTo(this.map);
+    // Lines first, so they sit under the markers. Leaflet puts markers in their
+    // own pane above the overlay pane anyway, but the order here says the intent.
+    this.lineLayer = L.layerGroup().addTo(this.map);
     this.layer = L.layerGroup().addTo(this.map);
   },
 
@@ -518,11 +543,31 @@ const LeafletImpl = {
         iconSize: [size, size],
         iconAnchor: [size / 2, size / 2],
       });
-      L.marker([it.lat, it.lng], { icon, title: it.title })
-        .bindPopup(it.popup)
-        .on('popupopen', () => bindPopupActions())
-        .addTo(this.layer);
+      const m = L.marker([it.lat, it.lng], { icon, title: it.title });
+      // A marker either opens a popup or acts as a button, never both — two
+      // things happening on one click is how you get a popup you cannot dismiss.
+      if (it.onClick) m.on('click', it.onClick);
+      else m.bindPopup(it.popup).on('popupopen', () => bindPopupActions());
+      m.addTo(this.layer);
     }
+  },
+
+  /** Straight segments. `interactive: false` keeps thousands of them off the hit-test. */
+  lines(items) {
+    this.lineLayer.clearLayers();
+    for (const it of items) {
+      L.polyline([[it.a.lat, it.a.lng], [it.b.lat, it.b.lng]], {
+        color: it.color,
+        weight: it.weight,
+        opacity: it.opacity,
+        interactive: false,
+        lineCap: 'round',
+      }).addTo(this.lineLayer);
+    }
+  },
+
+  clearLines() {
+    this.lineLayer?.clearLayers();
   },
 
   fit() {
@@ -556,6 +601,7 @@ const GoogleImpl = {
   kind: 'google',
   map: null,
   mks: [],
+  polys: [],
   info: null,
   heatLayer: null,
 
@@ -608,12 +654,36 @@ const GoogleImpl = {
         },
       });
       m.addListener('click', () => {
+        if (it.onClick) return it.onClick();
         this.info.setContent(it.popup);
         this.info.open(this.map, m);
         setTimeout(bindPopupActions, 0);
       });
       return m;
     });
+  },
+
+  /**
+   * Google has no canvas equivalent of Leaflet's preferCanvas, so these are real
+   * Polyline objects. `clickable: false` is what keeps a few thousand of them
+   * from being hit-tested on every mouse move, which is the difference between
+   * a map that pans and one that crawls.
+   */
+  lines(items) {
+    this.clearLines();
+    this.polys = items.map((it) => new google.maps.Polyline({
+      path: [{ lat: it.a.lat, lng: it.a.lng }, { lat: it.b.lat, lng: it.b.lng }],
+      map: this.map,
+      strokeColor: it.color,
+      strokeWeight: it.weight,
+      strokeOpacity: it.opacity,
+      clickable: false,
+    }));
+  },
+
+  clearLines() {
+    for (const p of this.polys ?? []) p.setMap(null);
+    this.polys = [];
   },
 
   /**
@@ -857,6 +927,10 @@ function paintBadges() {
   // Only the critical count. Putting all 55 flagged areas in a red pill would
   // read as an error state and stop meaning anything by the second day.
   $('#badge-coverage').textContent = s.coverageFlags.critical || '';
+  // Drivers who have actually been asked where they work — which is exactly how
+  // much Auto Hunter has to draw. Shown even at zero, because an empty badge
+  // there would read as "nothing to see" when the truth is "nobody asked yet".
+  $('#badge-hunter').textContent = S.data.workProgress?.asked ?? 0;
   $('#badge-areas').textContent = s.areas;
   $('#badge-drivers').textContent = s.contacts;
   $('#badge-models').textContent = s.modelCount;
@@ -868,9 +942,11 @@ function go(view) {
   S.view = view;
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   const main = $('#main');
-  main.classList.toggle('no-pad', view === 'map');
+  // Full-bleed screens: the map fills the pane itself, so the usual page padding
+  // would leave a border of background around it.
+  main.classList.toggle('no-pad', view === 'map' || view === 'hunter');
   main.scrollTop = 0;
-  ({ today: viewToday, plan: viewPlan, map: viewMap, coverage: viewCoverage, areas: viewAreas, drivers: viewDrivers, models: viewModels, trips: viewTrips, settings: viewSettings }[view])();
+  ({ today: viewToday, plan: viewPlan, map: viewMap, hunter: viewHunter, coverage: viewCoverage, areas: viewAreas, drivers: viewDrivers, models: viewModels, trips: viewTrips, settings: viewSettings }[view])();
 }
 
 /**
@@ -1634,6 +1710,316 @@ async function viewMap() {
     const n = $('#map-basket')?.querySelectorAll('[data-unpick]').length ?? 0;
     if (n !== S.pick.size) paintBasket();
   }, 400);
+}
+
+// ---------------------------------------------------------------- auto hunter
+
+/**
+ * AUTO HUNTER — "a client wants Connaught Place. Which of my autos go there?"
+ *
+ * Answering that by hand means reading down the driver list and remembering
+ * where each one said he works. This screen is that lookup, drawn.
+ *
+ * WHAT A ROUTE IS HERE. Every PAIR of a driver's areas, joined by a straight
+ * line. Not a tour in some order — he never told us the order he drives them in,
+ * and picking one would draw a specific road he may never take. Connecting all
+ * the pairs claims only what he actually said: "these places are my patch."
+ * This is the same model server.js already uses for heat corridors, deliberately
+ * so — two screens disagreeing about where a driver goes would be a bug.
+ *
+ * WHOSE ROUTES GET DRAWN. Only drivers who have been ASKED. 162 of the 168 have
+ * nothing but a home address off the spreadsheet, and joining home addresses
+ * with lines would draw movement nobody ever reported — a confident picture of
+ * a guess. Those drivers are counted in the panel, never drawn.
+ *
+ * WHY NO DISTANCE CAP. The heat corridors stop at 10 km, because claiming auto
+ * traffic on the streets of a 15 km line nobody described is too strong. Here
+ * the line is not a claim about the streets in between; it is a claim that one
+ * driver works both ends, which is exactly what he said. So every pair is drawn.
+ */
+function hunterRoutes() {
+  const byId = new Map(S.data.areaStats.map((a) => [a.id, a]));
+
+  const routes = [];
+  let askedCount = 0;
+  let activeCount = 0;
+
+  for (const c of S.data.contacts) {
+    if (c.status && c.status !== 'active') continue;
+    activeCount++;
+    const w = c.work;
+    if (!w?.asked) continue;
+    askedCount++;
+
+    // bestArea is already forced into workAreaIds by the server, but a Set
+    // keeps this honest if that ever stops being true.
+    const ids = [...new Set([w.startAreaId, ...(w.workAreaIds ?? []), w.bestAreaId].filter(Boolean))];
+    const nodes = ids.map((id) => byId.get(id)).filter((a) => a?.lat && a?.lng);
+    if (!nodes.length) continue;
+
+    const pairs = [];
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) pairs.push([nodes[i], nodes[j]]);
+    }
+
+    // A driver with ONE marked area has no line to draw but still serves that
+    // area, so he belongs in the answer. Dropping him here would make the map
+    // and the list disagree about who covers the place.
+    routes.push({
+      contact: c,
+      areaIds: new Set(nodes.map((n) => n.id)),
+      nodes,
+      pairs,
+      autos: Math.max(1, c.fleetSize ?? 1),
+      bestAreaId: w.bestAreaId ?? null,
+      startAreaId: w.startAreaId ?? null,
+    });
+  }
+
+  return { routes, askedCount, activeCount };
+}
+
+const HUNTER_LINE = '#00c2e0';
+const HUNTER_HOT = '#f59e0b';
+
+function viewHunter() {
+  const { routes, askedCount, activeCount } = hunterRoutes();
+  const sel = S.hunterPick;
+
+  // How many autos (not drivers) serve each area — the number a client cares
+  // about is vehicles carrying the ad, not people signed.
+  const autosByArea = new Map();
+  const driversByArea = new Map();
+  for (const r of routes) {
+    for (const id of r.areaIds) {
+      autosByArea.set(id, (autosByArea.get(id) ?? 0) + r.autos);
+      driversByArea.set(id, (driversByArea.get(id) ?? 0) + 1);
+    }
+  }
+
+  // Sorted by how many of the SELECTED areas each driver covers, so a driver who
+  // hits everything the client asked for rises above one who hits a single area.
+  // That ordering is the whole answer when a client names three places at once.
+  const matching = () => {
+    if (!sel.size) return [];
+    return routes
+      .map((r) => ({ r, hits: [...sel].filter((id) => r.areaIds.has(id)).length }))
+      .filter((x) => x.hits > 0)
+      .sort((a, b) => b.hits - a.hits || b.r.autos - a.r.autos || a.r.contact.name.localeCompare(b.r.contact.name));
+  };
+
+  const totalLines = routes.reduce((n, r) => n + r.pairs.length, 0);
+
+  $('#main').innerHTML = `
+    <div class="map-shell">
+      <div class="map-wrap">
+        <div id="map"></div>
+        <div class="map-banner" id="hunt-banner">Loading map…</div>
+      </div>
+      <div class="map-side">
+        <div>
+          <div class="page-title" style="font-size:16px">Auto Hunter</div>
+          <div class="field-hint" id="hunt-sub"></div>
+        </div>
+
+        ${askedCount === 0 ? `
+          <div class="note warn">
+            <strong>No driver has been asked yet where he works.</strong>
+            This screen draws the areas a driver told you he covers — until
+            someone has been asked there is nothing to draw. Open a driver,
+            fill in <em>Where he works</em>, and his route appears here.
+            <button class="btn btn-sm btn-primary btn-block" style="margin-top:8px" data-go="drivers">Open drivers</button>
+          </div>` : ''}
+
+        <div>
+          <div class="card-title" style="margin-bottom:6px">Which areas does the client want?</div>
+          <input type="text" id="hunt-q" placeholder="Search an area…" autocomplete="off">
+          <div class="hunt-picked" id="hunt-picked"></div>
+        </div>
+
+        <div class="hunt-list" id="hunt-areas"></div>
+
+        <div id="hunt-result"></div>
+
+        <div class="map-legend">
+          <div class="legend-row"><span class="legend-line" style="background:${HUNTER_LINE}"></span>An auto's patch — two areas one driver covers</div>
+          <div class="legend-row"><span class="legend-line" style="background:${HUNTER_HOT}"></span>Matches the areas you picked</div>
+          <div class="legend-row dim">Thicker line = more autos. Darker = more autos on the same stretch.</div>
+        </div>
+        <div class="note" id="hunt-note"></div>
+      </div>
+    </div>`;
+
+  $('#hunt-sub').innerHTML = askedCount
+    ? `<strong>${askedCount}</strong> of ${activeCount} drivers have said where they work · ${totalLines} links drawn`
+    : `0 of ${activeCount} drivers have said where they work`;
+
+  // ---- map painting
+
+  const paintMap = () => {
+    if (!MapView.ready || !MapView.impl) return;
+    const hits = new Set(matching().map((x) => x.r.contact.id));
+
+    const segs = [];
+    for (const r of routes) {
+      const on = sel.size > 0 && hits.has(r.contact.id);
+      // Everything unselected stays visible but recedes. Hiding it would throw
+      // away the reason to look at this screen at all — the shape of where the
+      // whole fleet goes is the context that makes one answer meaningful.
+      const dim = sel.size > 0 && !on;
+      for (const [a, b] of r.pairs) {
+        segs.push({
+          a, b,
+          color: on ? HUNTER_HOT : HUNTER_LINE,
+          // Fleet size, flattened. A 10-auto owner should read as heavier than a
+          // solo driver without being ten times the width and swallowing the map.
+          weight: on ? 2 + Math.min(5, Math.sqrt(r.autos)) : 1 + Math.min(3, Math.sqrt(r.autos) * 0.7),
+          opacity: on ? 0.95 : dim ? 0.06 : 0.22,
+        });
+      }
+    }
+    // Selected last, so a highlighted route is never buried under the faint ones.
+    segs.sort((x, y) => x.opacity - y.opacity);
+    MapView.lines(segs);
+
+    MapView.markers(S.data.areaStats
+      .filter((a) => a.lat && a.lng)
+      .map((a) => {
+        const autos = autosByArea.get(a.id) ?? 0;
+        const picked = sel.has(a.id);
+        return {
+          id: a.id,
+          lat: a.lat,
+          lng: a.lng,
+          color: picked ? HUNTER_HOT : autos ? HUNTER_LINE : '#3a4859',
+          size: picked ? 20 : autos ? 15 : 8,
+          label: autos ? String(autos) : '',
+          title: `${a.name} — ${autos} auto${autos === 1 ? '' : 's'} from ${driversByArea.get(a.id) ?? 0} driver(s)`,
+          // Clicking the map is the fastest way to answer "and this one?", so a
+          // marker toggles the area rather than opening a popup about it.
+          onClick: () => toggle(a.id),
+        };
+      }));
+  };
+
+  // ---- side panel painting
+
+  const paintPicked = () => {
+    $('#hunt-picked').innerHTML = sel.size
+      ? [...sel].map((id) => `<span class="hunt-chip">${esc(areaName(id))}<button data-unpick="${id}" aria-label="Remove">×</button></span>`).join('')
+        + `<button class="btn btn-sm" id="hunt-clear" style="margin-top:8px">Clear all</button>`
+      : '<span class="dim" style="font-size:12px">Nothing picked yet — search above, or click an area on the map.</span>';
+    $$('#hunt-picked [data-unpick]').forEach((b) => (b.onclick = () => toggle(b.dataset.unpick)));
+    const c = $('#hunt-clear');
+    if (c) c.onclick = () => { sel.clear(); paintAll(); };
+  };
+
+  const paintAreaList = () => {
+    const q = ($('#hunt-q')?.value ?? '').trim().toLowerCase();
+    const list = S.data.areaStats
+      .filter((a) => !q || a.name.toLowerCase().includes(q) || (a.zone ?? '').toLowerCase().includes(q))
+      .map((a) => ({ a, autos: autosByArea.get(a.id) ?? 0 }))
+      .sort((x, y) => y.autos - x.autos || x.a.name.localeCompare(y.a.name))
+      .slice(0, q ? 40 : 12);
+
+    $('#hunt-areas').innerHTML = list.length
+      ? list.map(({ a, autos }) => `
+          <button class="hunt-area ${sel.has(a.id) ? 'on' : ''}" data-pick="${a.id}">
+            <span class="hunt-area-name">${esc(a.name)}</span>
+            <span class="hunt-area-n ${autos ? '' : 'zero'}">${autos || '—'}</span>
+          </button>`).join('')
+        + (!q ? '<div class="dim" style="font-size:11.5px;margin-top:6px">Top 12 by autos. Search to find any of the 68.</div>' : '')
+      : '<div class="dim" style="font-size:12px">No area matches that.</div>';
+
+    $$('#hunt-areas [data-pick]').forEach((b) => (b.onclick = () => toggle(b.dataset.pick)));
+  };
+
+  const paintResult = () => {
+    const box = $('#hunt-result');
+    if (!sel.size) { box.innerHTML = ''; return; }
+
+    const hits = matching();
+    if (!hits.length) {
+      box.innerHTML = `<div class="note warn">
+        <strong>No auto covers ${sel.size === 1 ? 'that area' : 'any of those areas'} yet.</strong>
+        ${askedCount < activeCount
+          ? `Only ${askedCount} of ${activeCount} drivers have been asked where they work, so this is a gap in what you have recorded as much as a gap on the road.`
+          : 'Every driver has been asked, so this is a real gap — nobody you have works there.'}
+      </div>`;
+      return;
+    }
+
+    const autos = hits.reduce((n, x) => n + x.r.autos, 0);
+    const all = hits.filter((x) => x.hits === sel.size).length;
+
+    box.innerHTML = `
+      <div class="card-title" style="margin-bottom:6px">
+        ${autos} auto${autos === 1 ? '' : 's'} · ${hits.length} driver${hits.length === 1 ? '' : 's'}
+      </div>
+      ${sel.size > 1
+        ? `<div class="field-hint" style="margin-bottom:8px">${all} cover${all === 1 ? 's' : ''} all ${sel.size} areas. Sorted by how many they cover.</div>`
+        : ''}
+      <div class="hunt-drivers">
+        ${hits.map(({ r, hits: n }) => `
+          <div class="hunt-driver">
+            <div class="hunt-driver-top">
+              <button class="hunt-driver-name" data-open-c="${r.contact.id}">${esc(r.contact.name)}</button>
+              <span class="hunt-driver-n">${r.autos} auto${r.autos === 1 ? '' : 's'}</span>
+            </div>
+            <div class="hunt-driver-sub">
+              ${r.contact.phone ? `<a class="tel" href="tel:${esc(r.contact.phone)}">${esc(r.contact.phone)}</a> · ` : ''}
+              ${sel.size > 1 ? `covers ${n} of ${sel.size} · ` : ''}works ${r.areaIds.size} area${r.areaIds.size === 1 ? '' : 's'}
+            </div>
+            <div class="hunt-driver-areas">${r.nodes
+              .map((a) => `<span class="${sel.has(a.id) ? 'hit' : ''}">${esc(a.name)}</span>`)
+              .join('')}</div>
+          </div>`).join('')}
+      </div>`;
+
+    $$('#hunt-result [data-open-c]').forEach((b) => (b.onclick = () => openContact(b.dataset.openC)));
+  };
+
+  const paintAll = () => {
+    paintPicked();
+    paintAreaList();
+    paintResult();
+    paintMap();
+    wireCommon();
+  };
+
+  function toggle(id) {
+    if (sel.has(id)) sel.delete(id);
+    else sel.add(id);
+    paintAll();
+  }
+
+  $('#hunt-q').oninput = paintAreaList;
+  paintPicked();
+  paintAreaList();
+  paintResult();
+  wireCommon();
+
+  // ---- mount
+
+  (async () => {
+    try {
+      // preferCanvas: thousands of separate SVG paths is what makes a map like
+      // this stutter; on one canvas the same lines pan smoothly.
+      const kind = await MapView.mount($('#map'), { preferCanvas: true });
+      MapView.repaint = async () => { paintMap(); };
+      paintMap();
+      MapView.fit();
+      $('#hunt-banner').innerHTML = askedCount
+        ? `${routes.reduce((n, r) => n + r.autos, 0)} autos mapped across ${autosByArea.size} areas · <span class="dim">click an area to see who covers it</span>`
+        : 'Nothing to draw yet — no driver has been asked where he works.';
+      $('#hunt-note').innerHTML = kind === 'google'
+        ? 'Google Maps — real Delhi roads and labels.'
+        : 'Free OpenStreetMap. Add a Google Maps key in <strong>Settings</strong> for Google\'s own map.';
+    } catch (err) {
+      $('#hunt-banner').textContent = err.message;
+      $('#hunt-note').innerHTML = `<strong>Map could not load.</strong> ${esc(err.message)}`;
+    }
+  })();
 }
 
 // ---------------------------------------------------------------- areas

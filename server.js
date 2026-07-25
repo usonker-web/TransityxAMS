@@ -789,6 +789,13 @@ async function api(req, res, url) {
     const stats = flagAreas(areaStats(db), heat);
     return send(res, 200, {
       ...db,
+      // workOf() resolves the three "where he actually works" answers and, more
+      // importantly, whether anyone has ASKED him — Auto Hunter draws routes
+      // only for drivers who have been, because a line between spreadsheet home
+      // addresses would invent movement nobody reported. Sent from here so that
+      // rule has one definition; a copy of it in the browser would drift from
+      // this one the first time either changed.
+      contacts: db.contacts.map((c) => ({ ...c, work: workOf(c) })),
       settings: publicSettings(db.settings),
       areaStats: stats,
       modelStats: modelStats(db),

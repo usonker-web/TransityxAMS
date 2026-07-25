@@ -83,6 +83,11 @@ shown**. That sweeps a whole zone the way your visit list is already grouped.
 on roll; colour is coverage, priority, or zone. The **Coverage / Demand / Gap**
 buttons switch to heat. See *The heatmap* below.
 
+**Auto Hunter** — a client names an area; this says which autos go there. Every
+driver's marked areas are joined by straight lines, all of them at once, so the
+corridors your fleet actually covers show up where the lines pile on top of each
+other. See *Auto Hunter* below.
+
 **Areas** — all 68. Sort by any column; filter to **Missing** to see researched
 demand where you have nobody. See *Where Delhi needs autos* below.
 
@@ -173,6 +178,48 @@ driver's. Sort the Drivers page by autos and work down.
 
 > These answers are **not in the spreadsheet** and never will be. They survive
 > *Re-import Excel* — the importer carries them across explicitly.
+
+---
+
+## Auto Hunter
+
+A client wants Connaught Place. Which of your autos actually go there?
+
+Answering that by hand means reading down 166 drivers and remembering where each
+one said he works. **Auto Hunter** is that lookup, drawn.
+
+Type an area, or click one on the map. The panel answers with the number of
+**autos** — not drivers, since autos are what carry the ad — then lists every
+driver behind that number with his phone, his fleet, and the rest of his patch.
+Pick several areas and the list re-sorts so whoever covers the most of what the
+client asked for is at the top, with *"covers 2 of 3"* on each card.
+
+### What the lines mean
+
+Every **pair** of one driver's areas, joined by a straight line. Not a tour in
+some order — he never said what order he drives them in, and picking one would
+draw a specific road he may never take. Joining all the pairs claims only what he
+did say: *these places are my patch.*
+
+All drivers are drawn at once and deliberately left faint, so where the lines
+pile up is where your fleet genuinely concentrates. Picking an area lights its
+autos amber and dims the rest — the rest stay visible on purpose, because the
+shape of the whole fleet is the context that makes one answer worth anything.
+Thicker line means more autos on it.
+
+### It only draws drivers who have been asked
+
+A line between two spreadsheet home addresses would be movement nobody ever
+reported, drawn confidently. So the 162 drivers who have only a home address are
+counted in the panel and never drawn. The badge next to **Auto Hunter** in the
+menu is how many have been asked — it is the honest measure of how much this
+screen can tell you, and it goes up as you fill answers in under
+**Drivers → their name → Where he works**.
+
+> The heat corridors on the Coverage Map stop at 10 km; these lines have no
+> limit. Different claim: a corridor asserts auto traffic on the streets in
+> between, which needs the distance to be plausible. A line here asserts only
+> that one driver works both ends, which is exactly what he told you.
 
 ---
 

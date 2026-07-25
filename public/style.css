@@ -402,6 +402,56 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 .map-legend { display: flex; flex-direction: column; gap: 7px; }
 .legend-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
 .legend-swatch { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+/* Routes are lines, so their legend key is a line and not a dot. */
+.legend-line { width: 14px; height: 3px; border-radius: 2px; flex: none; }
+
+/* ---------------------------------------------------------------- auto hunter */
+
+.hunt-picked { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.hunt-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 999px;
+  padding: 3px 6px 3px 10px; font-size: 12px; color: var(--text);
+}
+.hunt-chip button {
+  border: 0; background: none; color: var(--dim); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px;
+}
+.hunt-chip button:hover { color: var(--red); }
+
+/* The area picker. Capped so a long list scrolls inside the panel instead of
+   pushing the answer below the fold — the answer is the point of the screen. */
+.hunt-list { display: flex; flex-direction: column; gap: 2px; max-height: 232px; overflow-y: auto; }
+.hunt-area {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; text-align: left; cursor: pointer;
+  background: none; border: 1px solid transparent; border-radius: var(--r);
+  padding: 6px 8px; font-size: 12.5px; color: var(--text); font-family: inherit;
+}
+.hunt-area:hover { background: var(--panel); }
+.hunt-area.on { background: var(--panel-2); border-color: var(--amber); }
+.hunt-area-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hunt-area-n { font: 600 11.5px var(--mono); color: var(--teal-hi); flex: none; }
+.hunt-area-n.zero { color: var(--muted); font-weight: 400; }
+
+.hunt-drivers { display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow-y: auto; }
+.hunt-driver { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; }
+.hunt-driver-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.hunt-driver-name {
+  background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit;
+  font-size: 13px; font-weight: 600; color: var(--text); text-align: left;
+}
+.hunt-driver-name:hover { color: var(--teal-hi); text-decoration: underline; }
+.hunt-driver-n { font: 600 11px var(--mono); color: var(--amber); flex: none; }
+.hunt-driver-sub { font-size: 11.5px; color: var(--dim); margin-top: 2px; }
+.hunt-driver-areas { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.hunt-driver-areas span {
+  font-size: 11px; padding: 1px 6px; border-radius: 999px;
+  background: var(--panel-2); color: var(--muted);
+}
+/* The areas the client actually asked for, picked out of the driver's full list
+   so you can see at a glance which of his patch is the relevant part. */
+.hunt-driver-areas span.hit { background: #f59e0b26; color: var(--amber); font-weight: 600; }
 
 /* left offset clears Leaflet's zoom control, which also sits top-left */
 .map-banner {
