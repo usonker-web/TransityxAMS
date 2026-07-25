@@ -80,6 +80,7 @@ if (isServerless()) process.env.RAMA_SERVERLESS = '1';
 const EMPTY = {
   contacts: [],
   areas: [],
+  vehicles: [],
   trips: [],
   settings: {
     mapsApiKey: '',
@@ -108,8 +109,86 @@ async function loadData() {
     throw new Error(`Could not read the data (${err.message}). Fix that before starting.`);
   }
   if (!parsed) return structuredClone(EMPTY);
-  return { ...structuredClone(EMPTY), ...parsed, settings: { ...EMPTY.settings, ...(parsed.settings ?? {}) } };
+  const db = { ...structuredClone(EMPTY), ...parsed, settings: { ...EMPTY.settings, ...(parsed.settings ?? {}) } };
+  return hoistVehicles(db);
 }
+
+/**
+ * Autos used to live inside their owner, as `contact.vehicles`. They are their
+ * own records now, because the things you want to say about an auto do not fit
+ * inside a person: it has an owner AND a driver who is often somebody else, and
+ * on a dual shift it has two drivers.
+ *
+ * This lifts the old shape into the new one, in memory, on every load. Running
+ * on every load rather than once is deliberate — it makes the migration
+ * idempotent, so a half-written save, an older backup restored by hand, or a
+ * re-import that still writes the old shape all heal themselves on next start
+ * instead of quietly producing a planner with no autos in it.
+ *
+ * Nothing is invented here. The owner is whoever the auto was filed under; the
+ * driver is left EMPTY unless the sheet's `driverName` unambiguously matches one
+ * contact, because guessing which of three men called Raju drives this auto
+ * would be worse than admitting we do not know.
+ */
+function hoistVehicles(db) {
+  // loadData merges EMPTY in first, so this is normally already an array. It is
+  // guarded anyway because a migration that throws on unexpected input takes the
+  // whole planner down with it, and the input here is a file on someone's disk.
+  if (!Array.isArray(db.vehicles)) db.vehicles = [];
+  const seen = new Set(db.vehicles.map((v) => v.id));
+
+  // Names are matched case-insensitively and only when exactly one contact
+  // answers to them. Ambiguous names stay unlinked and keep the raw text.
+  const byName = new Map();
+  for (const c of db.contacts) {
+    const k = String(c.name ?? '').trim().toLowerCase();
+    if (!k) continue;
+    byName.set(k, byName.has(k) ? null : c.id); // null marks "more than one"
+  }
+
+  for (const c of db.contacts) {
+    if (!Array.isArray(c.vehicles)) { delete c.vehicles; continue; }
+    for (const v of c.vehicles) {
+      if (v.id && seen.has(v.id)) continue;
+      const driverId = byName.get(String(v.driverName ?? '').trim().toLowerCase()) ?? null;
+      db.vehicles.push({
+        id: v.id || `veh_${uid()}`,
+        number: v.number ?? '',
+        raw: v.raw ?? '',
+        ownerId: c.id,
+        // The owner very often drives his own single auto, but the sheet only
+        // says so by repeating his name — so that is the only case we assume.
+        drivers: driverId ? [{ contactId: driverId, shift: '' }] : [],
+        dualShift: false,
+        driverName: v.driverName ?? '',
+        passingDate: v.passingDate ?? '',
+        finance: v.finance ?? '',
+        financeDetails: v.financeDetails ?? '',
+        parking: v.parking ?? '',
+        areaId: null,
+        status: 'active',
+        notes: '',
+        source: 'excel',
+        excelRow: v.excelRow ?? null,
+      });
+      if (v.id) seen.add(v.id);
+    }
+    // Gone from the stored contact: two copies of the same auto is how they
+    // drift apart. The API puts a derived copy back on the way out.
+    delete c.vehicles;
+  }
+  return db;
+}
+
+/** Every auto filed under one person, newest sheet order preserved. */
+const vehiclesOf = (data, contactId) => data.vehicles.filter((v) => v.ownerId === contactId);
+
+/**
+ * Two drivers means two shifts, whether or not anyone ticked the box — a second
+ * driver on one auto IS the dual shift. The flag stays because an auto can be
+ * known to run days and nights before the second man's name is known.
+ */
+const isDualShift = (v) => !!v.dualShift || (v.drivers ?? []).length > 1;
 
 /** Returns immediately; store.js batches the actual write. */
 function saveData(data) {
@@ -491,27 +570,31 @@ function workProgress(data) {
  */
 function modelStats(data) {
   const byModel = new Map();
+  const ownerById = new Map(data.contacts.map((c) => [c.id, c]));
 
-  for (const c of data.contacts) {
-    for (const v of c.vehicles) {
-      const p = readPlate(v.number);
-      if (!p.ok) continue;
-      if (!byModel.has(p.model)) {
-        byModel.set(p.model, {
-          model: p.model,
-          kind: p.kind,
-          count: 0,
-          areas: new Map(),
-          owners: new Map(),
-          plates: [],
-        });
-      }
-      const st = byModel.get(p.model);
-      st.count += 1;
-      st.plates.push(v.number);
-      if (c.areaId) st.areas.set(c.areaId, (st.areas.get(c.areaId) ?? 0) + 1);
-      st.owners.set(c.id, (st.owners.get(c.id) ?? 0) + 1);
+  for (const v of data.vehicles) {
+    const p = readPlate(v.number);
+    if (!p.ok) continue;
+    if (!byModel.has(p.model)) {
+      byModel.set(p.model, {
+        model: p.model,
+        kind: p.kind,
+        count: 0,
+        areas: new Map(),
+        owners: new Map(),
+        plates: [],
+      });
     }
+    const st = byModel.get(p.model);
+    st.count += 1;
+    st.plates.push(v.number);
+    // The auto's own area if it has been set, otherwise its owner's — an auto
+    // parked somewhere other than where its owner lives is exactly the kind of
+    // correction the Vehicles screen exists to record.
+    const c = ownerById.get(v.ownerId);
+    const areaId = v.areaId ?? c?.areaId ?? null;
+    if (areaId) st.areas.set(areaId, (st.areas.get(areaId) ?? 0) + 1);
+    if (c) st.owners.set(c.id, (st.owners.get(c.id) ?? 0) + 1);
   }
 
   const areaName = (id) => data.areas.find((a) => a.id === id)?.name ?? 'Unknown';
@@ -568,8 +651,12 @@ function summary(data, stats = flagAreas(areaStats(data), heatPoints(data))) {
     zoneOrder: ZONE_ORDER,
     // Plates written down, vs autos known to exist. The gap is fleet autos whose
     // numbers were never collected (Vishal's ten, most of Raj Khan's).
-    platesKnown: data.contacts.reduce((n, c) => n + c.vehicles.filter((v) => v.number).length, 0),
+    platesKnown: data.vehicles.filter((v) => v.number).length,
     modelCount: modelStats(data).length,
+    // The auto side of the roster, as opposed to the people side.
+    vehicles: data.vehicles.length,
+    vehiclesDualShift: data.vehicles.filter((v) => isDualShift(v)).length,
+    vehiclesNoDriver: data.vehicles.filter((v) => !(v.drivers ?? []).length).length,
   };
 }
 
@@ -795,7 +882,10 @@ async function api(req, res, url) {
       // addresses would invent movement nobody reported. Sent from here so that
       // rule has one definition; a copy of it in the browser would drift from
       // this one the first time either changed.
-      contacts: db.contacts.map((c) => ({ ...c, work: workOf(c) })),
+      // `vehicles` is put back on each contact on the way out, derived from the
+      // real records. Autos are stored once, at the top level, but every screen
+      // that already asks a driver what he drives keeps working unchanged.
+      contacts: db.contacts.map((c) => ({ ...c, work: workOf(c), vehicles: vehiclesOf(db, c.id) })),
       settings: publicSettings(db.settings),
       areaStats: stats,
       modelStats: modelStats(db),
@@ -827,7 +917,6 @@ async function api(req, res, url) {
         fleetSize: Number(body.fleetSize) > 0 ? Number(body.fleetSize) : 1,
         fleetType: Number(body.fleetSize) > 1 ? 'multi' : 'solo',
         declaredFleet: Number(body.fleetSize) || 0,
-        vehicles: [],
         status: 'active',
         notes: body.notes ?? '',
         source: 'app',
@@ -918,8 +1007,118 @@ async function api(req, res, url) {
         db.meta.removedPhones = [...new Set([...(db.meta.removedPhones ?? []), ...phones])];
       }
 
+      // His autos go with him. Leaving them behind would produce records owned
+      // by nobody, which show up on the Vehicles screen as autos belonging to a
+      // driver who is not in the list any more — worse than losing them, because
+      // it looks like data corruption rather than a deletion.
+      const his = db.vehicles.filter((v) => v.ownerId === gone.id);
+      if (his.length) {
+        db.meta = db.meta ?? {};
+        db.meta.removedPlates = [
+          ...new Set([...(db.meta.removedPlates ?? []), ...his.map((v) => v.number).filter(Boolean)]),
+        ];
+        db.vehicles = db.vehicles.filter((v) => v.ownerId !== gone.id);
+      }
+      // And he stops being listed as somebody else's driver.
+      for (const v of db.vehicles) {
+        if ((v.drivers ?? []).some((d) => d.contactId === gone.id)) {
+          v.drivers = v.drivers.filter((d) => d.contactId !== gone.id);
+        }
+      }
+
       saveData(db);
-      return send(res, 200, { ok: true, name: gone.name });
+      return send(res, 200, { ok: true, name: gone.name, vehicles: his.length });
+    }
+  }
+
+  // ---- vehicles
+  //
+  // Autos are their own records, so this is a full CRUD rather than a field on
+  // a driver. An auto's owner and its driver are two different links: the man
+  // who bought it is regularly not the man behind the handlebars, and on a dual
+  // shift there are two of the latter.
+  if (resource === 'vehicles') {
+    /** Keep only real contact links, and never the same man twice on one auto. */
+    const cleanDrivers = (list) => {
+      const out = [];
+      const seen = new Set();
+      for (const d of Array.isArray(list) ? list : []) {
+        const cid = typeof d === 'string' ? d : d?.contactId;
+        if (!cid || seen.has(cid) || !db.contacts.some((c) => c.id === cid)) continue;
+        seen.add(cid);
+        out.push({ contactId: cid, shift: ['day', 'night'].includes(d?.shift) ? d.shift : '' });
+      }
+      return out;
+    };
+    // Plates are compared and searched everywhere; letting the same auto in as
+    // "dl1rw0740" and "DL 1RW 0740" would split it into two.
+    const cleanNumber = (n) => String(n ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+    if (method === 'POST') {
+      const body = await readBody(req);
+      const ownerId = body.ownerId ?? null;
+      if (!ownerId || !db.contacts.some((c) => c.id === ownerId)) {
+        return send(res, 400, { error: 'Pick who owns this auto.' });
+      }
+      const vehicle = {
+        id: `veh_${uid()}`,
+        number: cleanNumber(body.number),
+        raw: '',
+        ownerId,
+        drivers: cleanDrivers(body.drivers),
+        dualShift: !!body.dualShift,
+        driverName: '',
+        passingDate: body.passingDate ?? '',
+        finance: body.finance ?? '',
+        financeDetails: body.financeDetails ?? '',
+        parking: body.parking ?? '',
+        areaId: body.areaId && db.areas.some((a) => a.id === body.areaId) ? body.areaId : null,
+        status: body.status === 'idle' ? 'idle' : 'active',
+        notes: body.notes ?? '',
+        source: 'app',
+        excelRow: null,
+        createdAt: new Date().toISOString(),
+      };
+      db.vehicles.push(vehicle);
+      saveData(db);
+      return send(res, 201, vehicle);
+    }
+
+    if (id && method === 'PUT') {
+      const body = await readBody(req);
+      const v = db.vehicles.find((x) => x.id === id);
+      if (!v) return send(res, 404, { error: 'Auto not found.' });
+
+      if ('number' in body) v.number = cleanNumber(body.number);
+      if ('ownerId' in body && db.contacts.some((c) => c.id === body.ownerId)) v.ownerId = body.ownerId;
+      if ('drivers' in body) v.drivers = cleanDrivers(body.drivers);
+      if ('dualShift' in body) v.dualShift = !!body.dualShift;
+      if ('areaId' in body) {
+        v.areaId = body.areaId && db.areas.some((a) => a.id === body.areaId) ? body.areaId : null;
+      }
+      if ('status' in body) v.status = body.status === 'idle' ? 'idle' : 'active';
+      for (const k of ['passingDate', 'finance', 'financeDetails', 'parking', 'notes']) {
+        if (k in body) v[k] = body[k] ?? '';
+      }
+      // Anything corrected by hand has to survive the next Re-import Excel, the
+      // same way a hand-fixed area does. See the merge in import.js.
+      v.edited = true;
+      saveData(db);
+      return send(res, 200, v);
+    }
+
+    if (id && method === 'DELETE') {
+      const i = db.vehicles.findIndex((x) => x.id === id);
+      if (i < 0) return send(res, 404, { error: 'Auto not found.' });
+      const [gone] = db.vehicles.splice(i, 1);
+      // Same trap as deleting a driver: the sheet still lists this plate and
+      // would rebuild it on the next import, so remember that it was removed.
+      if (gone.number) {
+        db.meta = db.meta ?? {};
+        db.meta.removedPlates = [...new Set([...(db.meta.removedPlates ?? []), gone.number])];
+      }
+      saveData(db);
+      return send(res, 200, { ok: true, number: gone.number });
     }
   }
 

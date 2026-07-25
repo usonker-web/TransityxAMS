@@ -96,6 +96,10 @@ fleet owners, captains, shared numbers, or **one auto model**. Open anyone to
 edit him; **Delete** at the bottom of that panel removes him for good — see
 *Deleting a driver* below, because it interacts with the spreadsheet.
 
+**Vehicles** — every auto, one row each, with its own page. Who owns it, who
+drives it, whether it runs a dual shift, its papers. See *Autos are not drivers*
+below.
+
 **Auto Models** — the fleet split by model, read off the number plates. See below.
 
 **Visit Log** — what happened on each trip: who was met, how many signed, when
@@ -528,11 +532,62 @@ the app that was never in the sheet stays too.
 It reads `%USERPROFILE%\Downloads\rama bhaiya drivers list and city data.xlsx`.
 For a file elsewhere: `node import.js "C:\path\to\file.xlsx"`
 
+---
+
+## Autos are not drivers
+
+An auto used to be a line inside its owner's record — readable, not editable. A
+man with six of them had six autos you could look at and none you could say
+anything about.
+
+That does not survive contact with how the trade actually works. **The owner is
+regularly not the driver**: he owns the vehicle and employs somebody to drive it.
+And an auto on a **dual shift** has two drivers, one on days and one on nights.
+Neither of those facts fits inside a single person's record.
+
+So autos are their own records now, on the **Vehicles** screen. Each one has:
+
+- a **plate** — the model is read from it, so getting the plate right fills the
+  model in for free
+- an **owner**, picked from your Drivers list
+- **however many drivers** it actually has, each with a shift, also picked from
+  your list — so *"who drives this"* is a link to a real man with a phone number,
+  not three spellings of one name
+- a **dual-shift** tick, for when you know it runs day and night but not yet who
+  the second man is. Two drivers already counts as dual without ticking anything
+- papers and money: passing date, finance, parking, where it runs, and notes
+
+A driver's page now **lists** his autos and links to them, rather than trying to
+hold their details. That is the split: his page is about him, the auto's page is
+about the auto. **+ Add an auto for him** on his page files a new one under him
+straight away.
+
+### The two auto counts, and why they differ
+
+The **Autos** number on a driver is what he *told you* he has. The Vehicles
+screen is what you have actually *written down*. Right now that is 199 against
+175, and the gap is real: fleet owners like Vishal declared ten autos and only
+one plate was ever collected.
+
+Coverage still counts the declared number, deliberately — he told you those autos
+are on the road, and the heatmap should believe him. So filling in the Vehicles
+screen does not move your coverage map. The banner at the top of the screen shows
+the gap so it is never mistaken for missing data.
+
+> Autos edited here **survive Re-import Excel**. The importer merges rather than
+> rebuilds: it matches each sheet row to the record it already made, by plate and
+> then by row number, and leaves anything you have corrected alone. The second
+> key is what saves a plate you fixed by hand — the sheet still says the old one.
+
+---
+
+## Deleting things
+
 ### Deleting a driver
 
 Open him on the **Drivers** screen and press **Delete** at the bottom. He goes,
-along with his autos and everything collected about where he works. There is no
-undo.
+along with **his autos** and everything collected about where he works, and he is
+removed as the driver of anyone else's auto. There is no undo.
 
 Because the re-import above matches on phone number, deleting someone the sheet
 still lists would normally last only until the next `Re-import Excel.bat` — and

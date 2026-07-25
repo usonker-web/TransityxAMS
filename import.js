@@ -424,6 +424,75 @@ function buildContacts(driverRows, captainRows, areas, existing, removed = []) {
   return { contacts: [...merged, ...appOnly], updated, skipped };
 }
 
+/**
+ * Autos are their own records now (see hoistVehicles in server.js), so the sheet
+ * no longer owns them outright — it owns the roster of plates, and the app owns
+ * everything you can only learn by asking: who actually drives it, whether it
+ * runs a second shift, where it is parked.
+ *
+ * So this MERGES rather than rebuilds. An auto touched in the app is matched
+ * back to its sheet row and keeps its own version; an untouched one is refreshed
+ * from the sheet as before.
+ *
+ * Matched by plate first, then by sheet row. The second key is what saves a
+ * plate corrected by hand: the sheet still says the old number, so matching on
+ * number alone would file the correction as a new auto and leave the old one
+ * behind as a duplicate.
+ */
+function mergeVehicles(contacts, prior = [], removedPlates = []) {
+  const blocked = new Set(removedPlates);
+  const byNumber = new Map();
+  const byRow = new Map();
+  for (const v of prior) {
+    if (v.number) byNumber.set(v.number, v);
+    if (v.excelRow != null) byRow.set(v.excelRow, v);
+  }
+
+  const out = [];
+  const used = new Set();
+  let skipped = 0;
+
+  for (const c of contacts) {
+    for (const v of c.vehicles ?? []) {
+      const num = String(v.number ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      // Deleted on the Vehicles screen. The sheet still lists it, and without
+      // this the deletion would last until the next import and then undo itself.
+      if (num && blocked.has(num)) { skipped++; continue; }
+
+      const was = (num && byNumber.get(num)) || (v.excelRow != null && byRow.get(v.excelRow)) || null;
+      if (was) used.add(was.id);
+      // Once someone has corrected an auto here, the app owns its details. The
+      // sheet keeps only what the app has no opinion about.
+      const mine = was?.edited ? was : null;
+
+      out.push({
+        id: was?.id ?? v.id,
+        number: mine ? mine.number : num,
+        raw: v.raw ?? '',
+        ownerId: mine ? mine.ownerId : c.id,
+        drivers: was?.drivers ?? [],
+        dualShift: was?.dualShift ?? false,
+        driverName: v.driverName ?? '',
+        passingDate: mine ? mine.passingDate : (v.passingDate ?? ''),
+        finance: mine ? mine.finance : (v.finance ?? ''),
+        financeDetails: mine ? mine.financeDetails : (v.financeDetails ?? ''),
+        parking: mine ? mine.parking : (v.parking ?? ''),
+        areaId: was?.areaId ?? null,
+        status: was?.status ?? 'active',
+        notes: was?.notes ?? '',
+        edited: was?.edited ?? false,
+        source: 'excel',
+        excelRow: v.excelRow ?? null,
+      });
+    }
+  }
+
+  // Autos added by hand that were never in the sheet, and any edited record the
+  // sheet has since stopped listing. Neither may vanish just because a row moved.
+  const kept = prior.filter((v) => !used.has(v.id) && (v.source !== 'excel' || v.edited));
+  return { vehicles: [...out, ...kept], skipped, kept: kept.length };
+}
+
 // ------------------------------------------------------------------ main
 
 function main() {
@@ -441,13 +510,21 @@ function main() {
   const visitRows = parseVisitList(book.get('Visit list') ?? []);
 
   const removedPhones = prior.meta?.removedPhones ?? [];
+  const removedPlates = prior.meta?.removedPlates ?? [];
 
   const { areas, unresolved, merged, added } = buildAreas(driverRows, captainRows, visitRows, prior.areas ?? []);
   const { contacts, updated, skipped } = buildContacts(driverRows, captainRows, areas, prior.contacts ?? [], removedPhones);
 
+  // Autos come out of the contacts and become their own records. Anything the
+  // app already knew about an auto is merged back in rather than overwritten.
+  const { vehicles, skipped: platesSkipped, kept: platesKept } =
+    mergeVehicles(contacts, prior.vehicles ?? [], removedPlates);
+  for (const c of contacts) delete c.vehicles;
+
   const data = {
     contacts,
     areas,
+    vehicles,
     trips: prior.trips ?? [],
     settings: {
       mapsApiKey: '',
@@ -462,6 +539,7 @@ function main() {
       // every import, so leaving this out would drop the list of deleted
       // drivers and let the very next import undo every deletion.
       removedPhones,
+      removedPlates,
     },
   };
 
@@ -476,13 +554,12 @@ function main() {
   // A registration written twice is either a double-entered row or two people
   // claiming one auto. Only Rama sir knows which, so surface it rather than
   // quietly picking a winner and changing his numbers behind his back.
+  const ownerById = new Map(contacts.map((c) => [c.id, c]));
   const seenVeh = new Map();
-  for (const c of contacts) {
-    for (const v of c.vehicles) {
-      if (!v.number) continue;
-      if (!seenVeh.has(v.number)) seenVeh.set(v.number, []);
-      seenVeh.get(v.number).push({ contact: c, row: v.excelRow });
-    }
+  for (const v of vehicles) {
+    if (!v.number) continue;
+    if (!seenVeh.has(v.number)) seenVeh.set(v.number, []);
+    seenVeh.get(v.number).push({ contact: ownerById.get(v.ownerId) ?? { name: '(owner removed)' }, row: v.excelRow });
   }
   const dupVeh = [...seenVeh.entries()].filter(([, hits]) => hits.length > 1);
 
@@ -495,6 +572,9 @@ function main() {
   // Say it out loud. A row silently vanishing from the sheet's count is exactly
   // what would send someone hunting for a parsing bug that isn't there.
   if (skipped) console.log(`    ${skipped} sheet row(s) skipped — deleted in the app (delete them from the sheet too, or they stay listed here every time)`);
+  console.log(`    ${vehicles.length} autos on record (${vehicles.filter((v) => v.edited).length} edited here, kept as they are)`);
+  if (platesSkipped) console.log(`    ${platesSkipped} plate(s) skipped — deleted on the Vehicles screen`);
+  if (platesKept) console.log(`    ${platesKept} auto(s) kept that the sheet no longer lists`);
   const keptWork = contacts.filter((c) => c.startAreaId || c.bestAreaId || (c.workAreaIds ?? []).length).length;
   if (keptWork) console.log(`    ${keptWork} drivers kept their "where he works" answers (not in the sheet — collected in the app)`);
 

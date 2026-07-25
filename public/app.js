@@ -21,10 +21,15 @@ const S = {
   pick: new Set(),      // areaIds selected in the planner
   planned: null,        // last computed route
   planDate: todayStr(),
-  sort: { areas: { key: 'priority', dir: -1 }, drivers: { key: 'fleetSize', dir: -1 } },
+  sort: {
+    areas: { key: 'priority', dir: -1 },
+    drivers: { key: 'fleetSize', dir: -1 },
+    vehicles: { key: 'owner', dir: 1 },
+  },
   filter: {
     drivers: '', driverZone: '', driverKind: '', driverModel: '', areaZone: '', areaDemand: '',
     coverZone: '', coverLevel: '',
+    vehicleQ: '', vehicleModel: '', vehicleShift: '', vehicleStatus: '',
     // Plan filters live here, not in the DOM: optimising re-renders the view,
     // and a zone sweep that silently forgets your zone is maddening.
     planQ: '', planZone: '', planListOnly: false, planUntapped: false,
@@ -1024,6 +1029,7 @@ function paintBadges() {
   $('#badge-hunter').textContent = S.data.workProgress?.asked ?? 0;
   $('#badge-areas').textContent = s.areas;
   $('#badge-drivers').textContent = s.contacts;
+  $('#badge-vehicles').textContent = s.vehicles ?? 0;
   $('#badge-models').textContent = s.modelCount;
   $('#badge-trips').textContent = s.tripsDone || '';
   $('#badge-settings').textContent = S.data.settings.mapsApiKey ? '' : 'key';
@@ -1037,7 +1043,7 @@ function go(view) {
   // would leave a border of background around it.
   main.classList.toggle('no-pad', view === 'map' || view === 'hunter');
   main.scrollTop = 0;
-  ({ today: viewToday, plan: viewPlan, map: viewMap, hunter: viewHunter, coverage: viewCoverage, areas: viewAreas, drivers: viewDrivers, models: viewModels, trips: viewTrips, settings: viewSettings }[view])();
+  ({ today: viewToday, plan: viewPlan, map: viewMap, hunter: viewHunter, coverage: viewCoverage, areas: viewAreas, drivers: viewDrivers, vehicles: viewVehicles, models: viewModels, trips: viewTrips, settings: viewSettings }[view])();
 }
 
 /**
@@ -2595,6 +2601,375 @@ function viewDrivers() {
   paint();
 }
 
+// ---------------------------------------------------------------- vehicles
+
+/**
+ * The auto side of the roster.
+ *
+ * Drivers and autos are different things and the app used to pretend otherwise:
+ * an auto was a line inside its owner, so a man with six of them had six autos
+ * you could read but not one you could edit. Worse, the owner is regularly not
+ * the driver — he employs someone — and an auto on a dual shift has two drivers,
+ * neither of which fits inside a single person's record.
+ *
+ * So this screen is about vehicles, and a driver's page now links here rather
+ * than trying to hold the details itself.
+ */
+const SHIFT_LABEL = { day: 'Day', night: 'Night', '': '—' };
+
+const vehicleOwner = (v) => S.data.contacts.find((c) => c.id === v.ownerId) ?? null;
+const vehicleDrivers = (v) => (v.drivers ?? [])
+  .map((d) => ({ ...d, contact: S.data.contacts.find((c) => c.id === d.contactId) }))
+  .filter((d) => d.contact);
+const vehicleIsDual = (v) => !!v.dualShift || (v.drivers ?? []).length > 1;
+
+function viewVehicles() {
+  const all = S.data.vehicles ?? [];
+  const s = S.data.summary;
+
+  $('#main').innerHTML = `
+    <div class="page-head">
+      <div>
+        <div class="page-title">Vehicles</div>
+        <div class="page-sub">${all.length} autos on record ·
+          ${s.vehiclesDualShift} on a dual shift ·
+          ${s.vehiclesNoDriver} with nobody driving them yet</div>
+      </div>
+      <div class="page-actions"><button class="btn btn-primary" id="v-new">+ Add an auto</button></div>
+    </div>
+
+    ${s.autos > all.length ? `<div class="note" style="margin-bottom:14px">
+      Drivers have told you about <strong>${s.autos} autos</strong> between them, and
+      <strong>${all.length}</strong> are written down here. The other
+      ${s.autos - all.length} exist but their numbers were never collected —
+      the coverage map still counts them, because he told you they are on the road.
+    </div>` : ''}
+
+    <div class="search-bar">
+      <input type="search" id="v-q" placeholder="Plate, owner or driver…" value="${esc(S.filter.vehicleQ)}">
+      <select id="v-model">
+        <option value="">Any model</option>
+        ${S.data.modelStats.map((m) => `<option value="${esc(m.model)}" ${S.filter.vehicleModel === m.model ? 'selected' : ''}>Model ${esc(m.model)} (${m.count})</option>`).join('')}
+      </select>
+      <select id="v-shift">
+        <option value="">Any shift</option>
+        <option value="dual" ${S.filter.vehicleShift === 'dual' ? 'selected' : ''}>Dual shift</option>
+        <option value="single" ${S.filter.vehicleShift === 'single' ? 'selected' : ''}>One driver</option>
+        <option value="none" ${S.filter.vehicleShift === 'none' ? 'selected' : ''}>No driver yet</option>
+      </select>
+      <select id="v-status">
+        <option value="">Any status</option>
+        <option value="active" ${S.filter.vehicleStatus === 'active' ? 'selected' : ''}>On the road</option>
+        <option value="idle" ${S.filter.vehicleStatus === 'idle' ? 'selected' : ''}>Idle</option>
+      </select>
+      <div class="sp"></div>
+      <span class="dim" id="v-count"></span>
+    </div>
+
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th data-vsort="number">Plate</th>
+        <th class="no-sort">Model</th>
+        <th data-vsort="owner">Owner</th>
+        <th class="no-sort">Driver</th>
+        <th class="no-sort">Shift</th>
+        <th class="no-sort">Finance</th>
+        <th class="no-sort">Status</th>
+        <th class="no-sort"></th>
+      </tr></thead>
+      <tbody id="v-body"></tbody>
+    </table></div>`;
+
+  const paint = () => {
+    const q = S.filter.vehicleQ.trim().toLowerCase();
+    const { key, dir } = S.sort.vehicles;
+
+    const rows = all
+      .filter((v) => {
+        if (S.filter.vehicleModel && plateModel(v.number) !== S.filter.vehicleModel) return false;
+        if (S.filter.vehicleShift === 'dual' && !vehicleIsDual(v)) return false;
+        if (S.filter.vehicleShift === 'single' && (vehicleIsDual(v) || !(v.drivers ?? []).length)) return false;
+        if (S.filter.vehicleShift === 'none' && (v.drivers ?? []).length) return false;
+        if (S.filter.vehicleStatus && (v.status ?? 'active') !== S.filter.vehicleStatus) return false;
+        if (!q) return true;
+        return (
+          (v.number ?? '').toLowerCase().includes(q)
+          || (vehicleOwner(v)?.name ?? '').toLowerCase().includes(q)
+          || vehicleDrivers(v).some((d) => d.contact.name.toLowerCase().includes(q))
+          // The sheet's own text, for autos nobody has linked to a driver yet.
+          || (v.driverName ?? '').toLowerCase().includes(q)
+        );
+      })
+      .sort((x, y) => {
+        const get = (v) => (key === 'owner' ? (vehicleOwner(v)?.name ?? '') : (v.number ?? ''));
+        return String(get(x)).localeCompare(String(get(y))) * dir;
+      });
+
+    $('#v-count').textContent = `${rows.length} shown`;
+    $('#v-body').innerHTML = rows.length ? rows.map((v) => {
+      const owner = vehicleOwner(v);
+      const drivers = vehicleDrivers(v);
+      const dual = vehicleIsDual(v);
+      const model = plateModel(v.number);
+      return `
+      <tr class="clickable" data-vehicle="${v.id}">
+        <td class="strong mono">${esc(v.number || '— no plate —')}</td>
+        <td>${model ? `<span class="chip chip-dim">${esc(model)}</span>` : '<span class="dim">—</span>'}</td>
+        <td class="muted">${owner ? esc(owner.name) : '<span class="chip chip-red">no owner</span>'}</td>
+        <td class="muted">${
+          drivers.length
+            ? drivers.map((d) => esc(d.contact.name)).join(', ')
+            : v.driverName
+              ? `<span class="dim" title="From the spreadsheet — not linked to anyone in your list yet">${esc(v.driverName)} <span class="chip chip-amber">unlinked</span></span>`
+              : '<span class="chip chip-amber">nobody yet</span>'}</td>
+        <td>${dual ? '<span class="chip chip-violet">dual</span>' : drivers.length ? `<span class="chip chip-dim">${esc(SHIFT_LABEL[drivers[0].shift] ?? '—')}</span>` : '<span class="dim">—</span>'}</td>
+        <td class="muted">${v.finance ? `<span class="chip chip-amber">${esc(v.finance)}</span>` : '<span class="dim">—</span>'}</td>
+        <td>${(v.status ?? 'active') === 'idle' ? '<span class="chip chip-dim">idle</span>' : '<span class="chip chip-green">on the road</span>'}</td>
+        <td><button class="btn btn-sm" data-open-v="${v.id}">Open</button></td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="8"><div class="empty">No auto matches that.</div></td></tr>';
+
+    $$('[data-vehicle]').forEach((tr) => (tr.onclick = (e) => { if (!e.target.closest('button')) openVehicle(tr.dataset.vehicle); }));
+    $$('[data-open-v]').forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openVehicle(b.dataset.openV); }));
+  };
+
+  $('#v-q').oninput = (e) => { S.filter.vehicleQ = e.target.value; paint(); };
+  $('#v-model').onchange = (e) => { S.filter.vehicleModel = e.target.value; paint(); };
+  $('#v-shift').onchange = (e) => { S.filter.vehicleShift = e.target.value; paint(); };
+  $('#v-status').onchange = (e) => { S.filter.vehicleStatus = e.target.value; paint(); };
+  $('#v-new').onclick = () => newVehicle();
+  $$('[data-vsort]').forEach((th) => (th.onclick = () => {
+    const k = th.dataset.vsort;
+    S.sort.vehicles = { key: k, dir: S.sort.vehicles.key === k ? -S.sort.vehicles.dir : 1 };
+    viewVehicles();
+  }));
+  paint();
+}
+
+/** The rows inside the Drivers section of an auto's drawer. */
+function driverRows(drivers, contacts) {
+  if (!drivers.length) {
+    return '<div class="field-hint" id="vd-empty">Nobody recorded yet. Add whoever actually drives it — that may not be the owner.</div>';
+  }
+  return drivers.map((d, i) => `
+    <div class="vd-row" data-vd="${i}">
+      <select class="vd-who">
+        ${contacts.map((c) => `<option value="${c.id}" ${c.id === d.contactId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+      </select>
+      <select class="vd-shift">
+        <option value="" ${d.shift === '' ? 'selected' : ''}>Shift —</option>
+        <option value="day" ${d.shift === 'day' ? 'selected' : ''}>Day</option>
+        <option value="night" ${d.shift === 'night' ? 'selected' : ''}>Night</option>
+      </select>
+      <button class="btn btn-sm btn-danger vd-x" data-vd-remove="${i}" aria-label="Remove">×</button>
+    </div>`).join('');
+}
+
+function openVehicle(id) {
+  const v = (S.data.vehicles ?? []).find((x) => x.id === id);
+  if (!v) return;
+  const contacts = S.data.contacts.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const areas = S.data.areaStats.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const model = plateModel(v.number);
+
+  // Local working copy: drivers are added and removed before anything is saved,
+  // so the drawer needs its own list rather than editing the loaded data.
+  let drivers = (v.drivers ?? []).map((d) => ({ contactId: d.contactId, shift: d.shift ?? '' }));
+
+  const clash = (S.data.vehicles ?? []).filter((x) => x.id !== v.id && x.number && x.number === v.number);
+
+  openDrawer(`
+    <div class="drawer-head">
+      <div>
+        <div class="drawer-title mono">${esc(v.number || '— no plate —')}
+          ${model ? `<span class="chip chip-teal">Model ${esc(model)}</span>` : ''}</div>
+        <div class="drawer-sub">${esc(vehicleOwner(v)?.name ?? 'no owner')}${
+          v.source === 'excel' ? ` · from the sheet, row ${v.excelRow ?? '?'}` : ' · added here'}</div>
+      </div>
+      <button class="drawer-x">×</button>
+    </div>
+
+    ${clash.length ? `<div class="note warn"><strong>This plate is on ${clash.length} other record${clash.length === 1 ? '' : 's'}.</strong>
+      One of them is wrong — the same auto cannot be owned twice.</div>` : ''}
+
+    <div class="drawer-section" style="margin-top:14px">
+      <div class="drawer-section-title">The auto</div>
+      <div class="field"><label class="field-label">Number plate</label>
+        <input type="text" id="v-number" value="${esc(v.number)}" placeholder="DL1RW0740">
+        <div class="field-hint">The model is read from the plate, so getting this right fills in the model too.</div>
+      </div>
+      <div class="field"><label class="field-label">Owner</label>
+        <select id="v-owner">
+          ${contacts.map((c) => `<option value="${c.id}" ${c.id === v.ownerId ? 'selected' : ''}>${esc(c.name)}${(c.fleetSize ?? 0) > 1 ? ` (${c.fleetSize} autos)` : ''}</option>`).join('')}
+        </select>
+        <div class="field-hint">Whose auto it is. Not necessarily who drives it.</div>
+      </div>
+      <div class="row">
+        <div class="field"><label class="field-label">Passing date</label>
+          <input type="date" id="v-passing" value="${esc(v.passingDate ?? '')}"></div>
+        <div class="field"><label class="field-label">Status</label>
+          <select id="v-status-f">
+            <option value="active" ${(v.status ?? 'active') === 'active' ? 'selected' : ''}>On the road</option>
+            <option value="idle" ${v.status === 'idle' ? 'selected' : ''}>Idle</option>
+          </select></div>
+      </div>
+      <div class="field"><label class="field-label">Where it runs</label>
+        <select id="v-area">
+          <option value="">— same as the owner —</option>
+          ${areas.map((a) => `<option value="${a.id}" ${a.id === v.areaId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+
+    <div class="drawer-section">
+      <div class="drawer-section-title">Who drives it</div>
+      <div class="field-hint" style="margin-bottom:10px">
+        The owner often is not the driver. Add each man who actually drives this
+        auto — two of them, and it is running a dual shift.
+      </div>
+      <div id="v-drivers">${driverRows(drivers, contacts)}</div>
+      <button class="btn btn-sm btn-block" id="v-add-driver" style="margin-top:8px">+ Add a driver</button>
+      <label class="check" style="margin-top:12px">
+        <input type="checkbox" id="v-dual" ${v.dualShift ? 'checked' : ''}>
+        Runs a dual shift
+      </label>
+      <div class="field-hint">Tick this when you know it runs day and night but not yet who the second man is. Two drivers above already counts as dual.</div>
+      ${v.driverName && !drivers.length ? `<div class="note" style="margin-top:10px">
+        The sheet says <strong>${esc(v.driverName)}</strong> drives it, but that name was
+        not matched to anyone in your list. Pick him above if he is there.
+      </div>` : ''}
+    </div>
+
+    <div class="drawer-section">
+      <div class="drawer-section-title">Money and parking</div>
+      <div class="row">
+        <div class="field"><label class="field-label">Finance</label>
+          <input type="text" id="v-finance" value="${esc(v.finance ?? '')}" placeholder="finance / owned"></div>
+        <div class="field"><label class="field-label">Parking</label>
+          <input type="text" id="v-parking" value="${esc(v.parking ?? '')}" placeholder="On Parking"></div>
+      </div>
+      <div class="field"><label class="field-label">Finance details</label>
+        <input type="text" id="v-findet" value="${esc(v.financeDetails ?? '')}" placeholder="Which financier, how much left"></div>
+    </div>
+
+    <div class="drawer-section">
+      <div class="drawer-section-title">Notes</div>
+      <textarea id="v-notes" placeholder="Anything about this particular auto">${esc(v.notes ?? '')}</textarea>
+    </div>
+
+    <div class="drawer-foot">
+      <button class="btn btn-primary" id="v-save">Save</button>
+      <div class="sp"></div>
+      <button class="btn btn-danger btn-sm" id="v-del">Delete</button>
+    </div>`);
+
+  // Driver rows are rebuilt whenever one is added or removed, so their current
+  // values have to be read back out of the DOM first or an unsaved change to the
+  // top row would vanish the moment a second driver is added.
+  const readDrivers = () => $$('#v-drivers .vd-row').map((row) => ({
+    contactId: row.querySelector('.vd-who').value,
+    shift: row.querySelector('.vd-shift').value,
+  }));
+
+  const wireDrivers = () => {
+    $$('#v-drivers [data-vd-remove]').forEach((b) => (b.onclick = () => {
+      drivers = readDrivers();
+      drivers.splice(Number(b.dataset.vdRemove), 1);
+      $('#v-drivers').innerHTML = driverRows(drivers, contacts);
+      wireDrivers();
+    }));
+  };
+  wireDrivers();
+
+  $('#v-add-driver').onclick = () => {
+    drivers = readDrivers();
+    drivers.push({ contactId: v.ownerId ?? contacts[0]?.id, shift: '' });
+    $('#v-drivers').innerHTML = driverRows(drivers, contacts);
+    wireDrivers();
+  };
+
+  $('#v-save').onclick = async () => {
+    await api('PUT', `/vehicles/${id}`, {
+      number: $('#v-number').value.trim(),
+      ownerId: $('#v-owner').value,
+      drivers: readDrivers(),
+      dualShift: $('#v-dual').checked,
+      passingDate: $('#v-passing').value,
+      status: $('#v-status-f').value,
+      areaId: $('#v-area').value || null,
+      finance: $('#v-finance').value.trim(),
+      financeDetails: $('#v-findet').value.trim(),
+      parking: $('#v-parking').value.trim(),
+      notes: $('#v-notes').value,
+    });
+    await refresh();
+    closeDrawer();
+    toast('Auto saved', 'good');
+    go(S.view);
+  };
+
+  $('#v-del').onclick = async () => {
+    if (!confirm(`Delete ${v.number || 'this auto'}?\n\nIts details go with it. This cannot be undone.${
+      v.source === 'excel' ? '\n\nIt came from the Excel sheet, so its row there will be skipped from now on — it will not come back on the next re-import.' : ''}`)) return;
+    await api('DELETE', `/vehicles/${id}`);
+    await refresh();
+    closeDrawer();
+    toast('Auto deleted');
+    go(S.view);
+  };
+}
+
+function newVehicle(ownerId = null) {
+  const contacts = S.data.contacts.slice().sort((a, b) => a.name.localeCompare(b.name));
+  if (!contacts.length) return toast('Add a driver first — an auto needs an owner', 'bad');
+
+  openDrawer(`
+    <div class="drawer-head">
+      <div><div class="drawer-title">Add an auto</div>
+        <div class="drawer-sub">One vehicle, with its own details</div></div>
+      <button class="drawer-x">×</button>
+    </div>
+    <div class="field"><label class="field-label">Number plate</label>
+      <input type="text" id="nv-number" placeholder="DL1RW0740">
+      <div class="field-hint">Leave it blank if you do not have it yet — everything else can still be recorded.</div>
+    </div>
+    <div class="field"><label class="field-label">Owner</label>
+      <select id="nv-owner">
+        ${contacts.map((c) => `<option value="${c.id}" ${c.id === ownerId ? 'selected' : ''}>${esc(c.name)}${(c.fleetSize ?? 0) > 1 ? ` (${c.fleetSize} autos)` : ''}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field"><label class="field-label">Driver</label>
+      <select id="nv-driver">
+        <option value="">— not known yet —</option>
+        ${contacts.map((c) => `<option value="${c.id}" ${c.id === ownerId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+      </select>
+      <div class="field-hint">Who actually drives it. Add a second driver, and mark the dual shift, on the auto's page after saving.</div>
+    </div>
+    <div class="row">
+      <div class="field"><label class="field-label">Passing date</label><input type="date" id="nv-passing"></div>
+      <div class="field"><label class="field-label">Finance</label><input type="text" id="nv-finance" placeholder="finance / owned"></div>
+    </div>
+    <div class="drawer-foot"><button class="btn btn-primary btn-block" id="nv-save">Add the auto</button></div>`);
+
+  $('#nv-save').onclick = async () => {
+    const driverId = $('#nv-driver').value;
+    const created = await api('POST', '/vehicles', {
+      number: $('#nv-number').value.trim(),
+      ownerId: $('#nv-owner').value,
+      drivers: driverId ? [{ contactId: driverId, shift: '' }] : [],
+      passingDate: $('#nv-passing').value,
+      finance: $('#nv-finance').value.trim(),
+    });
+    await refresh();
+    closeDrawer();
+    toast('Auto added', 'good');
+    go(S.view);
+    // Straight into the full page: adding one is usually the start of filling
+    // it in, not the end.
+    if (created?.id) openVehicle(created.id);
+  };
+}
+
 // ---------------------------------------------------------------- models
 
 function viewModels() {
@@ -3372,28 +3747,41 @@ function openContact(id) {
       <div class="field-hint" style="margin-top:6px">Two or more areas draws the roads between them as covered too, so long as they're close enough to shuttle between.</div>
     </div>
 
-    ${c.vehicles.length ? `<div class="drawer-section">
-      <div class="drawer-section-title">Vehicles (${c.vehicles.length})</div>
-      ${c.vehicles.map((v) => {
+    <div class="drawer-section">
+      <div class="drawer-section-title">His autos (${c.vehicles.length})</div>
+      <div class="field-hint" style="margin-bottom:10px">
+        Each auto has its own page — that is where its driver, its shift and its
+        papers live, because the man who owns an auto is often not the man
+        driving it.
+      </div>
+      ${c.vehicles.length ? c.vehicles.map((v) => {
         const clash = v.number ? vIdx.get(v.number).filter((o) => o.id !== c.id) : [];
         const twiceHere = v.number && c.vehicles.filter((x) => x.number === v.number).length > 1;
-        return `<div class="veh-row">
+        const drives = vehicleDrivers(v);
+        return `<button class="veh-row veh-link" data-open-v="${v.id}">
           <div>
-            <span class="veh-num">${esc(v.number || v.raw || '—')}</span>
+            <span class="veh-num">${esc(v.number || v.raw || '— no plate —')}</span>
             ${clash.length ? `<span class="chip chip-red">also under ${esc(clash.map((o) => o.name).join(', '))}</span>`
               : twiceHere ? '<span class="chip chip-amber">listed twice</span>' : ''}
-            ${v.driverName && v.driverName !== c.name ? `<div class="veh-driver">driven by ${esc(v.driverName)}</div>` : ''}
+            <div class="veh-driver">${
+              drives.length
+                ? `driven by ${esc(drives.map((d) => d.contact.name).join(', '))}`
+                : v.driverName
+                  ? `sheet says ${esc(v.driverName)} — not linked yet`
+                  : 'no driver recorded'}</div>
           </div>
           <div style="text-align:right">
-            ${v.passingDate ? `<div class="veh-driver">passing ${esc(v.passingDate)}</div>` : ''}
+            ${vehicleIsDual(v) ? '<span class="chip chip-violet">dual shift</span>' : ''}
             ${v.finance ? `<span class="chip chip-amber">${esc(v.finance)}</span>` : ''}
+            ${v.passingDate ? `<div class="veh-driver">passing ${esc(v.passingDate)}</div>` : ''}
           </div>
-        </div>`;
-      }).join('')}
+        </button>`;
+      }).join('') : '<div class="dim" style="font-size:12.5px">No auto written down for him yet.</div>'}
+      <button class="btn btn-sm btn-block" id="c-add-veh" style="margin-top:10px">+ Add an auto for him</button>
       ${withinSelf ? `<div class="field-hint" style="color:var(--amber)">${withinSelf} number${withinSelf === 1 ? ' is' : 's are'} repeated here, so this is probably <strong>${uniqueNums} auto${uniqueNums === 1 ? '' : 's'}</strong>, not ${c.fleetSize}. Correct the count above if so.</div>` : ''}
       ${dupes.some((v) => vIdx.get(v.number).some((o) => o.id !== c.id)) ? `<div class="field-hint" style="color:var(--red)">A number here is also recorded against someone else — one of the two entries is wrong.</div>` : ''}
       ${c.declaredFleet > c.vehicles.length ? `<div class="field-hint">Sheet says ${c.declaredFleet} autos but only ${c.vehicles.length} number${c.vehicles.length === 1 ? '' : 's'} written down — ${c.declaredFleet - c.vehicles.length} still to collect.</div>` : ''}
-    </div>` : ''}
+    </div>
 
     <div class="drawer-section">
       <div class="drawer-section-title">Notes</div>
@@ -3439,6 +3827,11 @@ function openContact(id) {
 
   wireAreaPick($('#c-work'));
   wireZoneChips($('#c-zones'), $('#c-work'), areas);
+
+  // His autos are their own records, so these leave his page rather than trying
+  // to edit a vehicle from inside a person.
+  $$('#drawer [data-open-v]').forEach((b) => (b.onclick = () => openVehicle(b.dataset.openV)));
+  $('#c-add-veh').onclick = () => newVehicle(c.id);
 
   $('#c-save').onclick = async () => {
     const work = readAreaPick($('#c-work'));
