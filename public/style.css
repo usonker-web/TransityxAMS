@@ -114,6 +114,41 @@ body {
 .nav-item.active { background: var(--panel-2); color: var(--text); font-weight: 600; }
 .nav-item.active .nav-label { box-shadow: -14px 0 0 -11px var(--teal-hi); }
 
+/* ---- grouped navigation
+
+   A group header is a switch, not a destination: it never carries the active
+   highlight, so "where am I" always points at exactly one row. */
+.nav-group { display: flex; flex-direction: column; gap: 2px; }
+.nav-head { color: var(--dim); font-size: 12px; font-weight: 600; letter-spacing: .3px; }
+.nav-head:hover { color: var(--text); }
+.nav-caret {
+  width: 0; height: 0; flex: none; margin-left: auto;
+  border-left: 4px solid currentColor;
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  transition: transform .16s ease;
+  opacity: .7;
+}
+.nav-group.open .nav-caret { transform: rotate(90deg); }
+
+/* Collapsed is the default in markup terms, so a browser with the stylesheet
+   still loading shows the groups shut rather than everything at once. */
+.nav-sub { display: none; position: relative; flex-direction: column; gap: 2px; }
+.nav-group.open .nav-sub { display: flex; }
+
+/* Indented, and a hairline runs down the group so the children read as belonging
+   to the header rather than as more top-level rows. */
+.nav-child { padding-left: 22px; position: relative; }
+.nav-sub::before {
+  content: ''; position: absolute; left: 15px; top: 0; bottom: 0;
+  border-left: 1px solid var(--line);
+}
+.nav-child.active .nav-label { box-shadow: none; }
+.nav-child.active::before {
+  content: ''; position: absolute; left: 14px; top: 7px; bottom: 7px;
+  border-left: 2px solid var(--teal-hi); border-radius: 2px;
+}
+
 .nav-badge {
   font: 600 11px var(--mono);
   color: var(--teal-hi);

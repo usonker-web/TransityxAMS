@@ -72,24 +72,22 @@ flags them on the driver's page so you can fix them when you find out.
 
 ## The screens
 
-**Today** — the day's route, where to go next by priority, and the biggest fleet
+The menu is grouped by what you are working on — the fleet, the map, or the day.
+Click a group name to open or close it; the app remembers which you left open,
+and opens whichever one holds the screen you are on.
+
+```
+Home
+AutoR Mgr    Drivers · Vehicles · Auto Models
+Area Mgr     Coverage Map · Auto Hunter · Needs Coverage · Areas
+Day Planner  Plan a Day · Visit Log
+Settings
+```
+
+**Home** — the day's route, where to go next by priority, and the biggest fleet
 owners to call.
 
-**Plan a Day** — tick areas, press *Estimate the day*, save it as a trip.
-The fastest way to plan: pick a zone, tick **Untapped only**, press **Add all
-shown**. That sweeps a whole zone the way your visit list is already grouped.
-
-**Coverage Map** — every area, as circles or as a heatmap. Circle size is autos
-on roll; colour is coverage, priority, or zone. The **Coverage / Demand / Gap**
-buttons switch to heat. See *The heatmap* below.
-
-**Auto Hunter** — a client names an area; this says which autos go there. Every
-driver's marked areas are joined by straight lines, all of them at once, so the
-corridors your fleet actually covers show up where the lines pile on top of each
-other. See *Auto Hunter* below.
-
-**Areas** — all 68. Sort by any column; filter to **Missing** to see researched
-demand where you have nobody. See *Where Delhi needs autos* below.
+### AutoR Mgr — the fleet
 
 **Drivers** — all 166. Search by name, phone, or vehicle number. Filter to just
 fleet owners, captains, shared numbers, or **one auto model**. Open anyone to
@@ -101,6 +99,29 @@ drives it, whether it runs a dual shift, its papers. See *Autos are not drivers*
 below.
 
 **Auto Models** — the fleet split by model, read off the number plates. See below.
+
+### Area Mgr — the map
+
+**Coverage Map** — every area, as circles or as a heatmap. Circle size is autos
+on roll; colour is coverage, priority, or zone. The **Coverage / Demand / Gap**
+buttons switch to heat. See *The heatmap* below.
+
+**Auto Hunter** — a client names an area; this says which autos go there. Every
+driver's marked areas are joined by straight lines, all of them at once, so the
+corridors your fleet actually covers show up where the lines pile on top of each
+other. See *Auto Hunter* below.
+
+**Needs Coverage** — the areas flagged as underserved, worst first. The count in
+the menu is the critical ones, and it stays visible even with the group closed.
+
+**Areas** — all 68. Sort by any column; filter to **Missing** to see researched
+demand where you have nobody. See *Where Delhi needs autos* below.
+
+### Day Planner — the day
+
+**Plan a Day** — tick areas, press *Estimate the day*, save it as a trip.
+The fastest way to plan: pick a zone, tick **Untapped only**, press **Add all
+shown**. That sweeps a whole zone the way your visit list is already grouped.
 
 **Visit Log** — what happened on each trip: who was met, how many signed, when
 to follow up.

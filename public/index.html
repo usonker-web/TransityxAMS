@@ -23,45 +23,84 @@
     <div class="brand-sub">Rama Planner</div>
   </div>
 
+  <!--
+    Eleven flat entries was a list to read rather than a menu to use. They are
+    grouped by what you are working on: the fleet, the map, or the day.
+
+    A group header only opens and closes — it never navigates. Giving it a screen
+    of its own would mean every click on it did two things, and the one you did
+    not want is the one that moves you off the page you were reading.
+  -->
   <nav class="nav">
     <button class="nav-item" data-view="today">
-      <span class="nav-label">Today</span>
+      <span class="nav-label">Home</span>
       <span class="nav-badge" id="badge-today"></span>
     </button>
-    <button class="nav-item" data-view="plan">
-      <span class="nav-label">Plan a Day</span>
-    </button>
-    <button class="nav-item" data-view="map">
-      <span class="nav-label">Coverage Map</span>
-    </button>
-    <button class="nav-item" data-view="hunter">
-      <span class="nav-label">Auto Hunter</span>
-      <span class="nav-badge muted" id="badge-hunter"></span>
-    </button>
-    <button class="nav-item" data-view="coverage">
-      <span class="nav-label">Needs Coverage</span>
-      <span class="nav-badge danger" id="badge-coverage"></span>
-    </button>
-    <button class="nav-item" data-view="areas">
-      <span class="nav-label">Areas</span>
-      <span class="nav-badge muted" id="badge-areas"></span>
-    </button>
-    <button class="nav-item" data-view="drivers">
-      <span class="nav-label">Drivers</span>
-      <span class="nav-badge muted" id="badge-drivers"></span>
-    </button>
-    <button class="nav-item" data-view="vehicles">
-      <span class="nav-label">Vehicles</span>
-      <span class="nav-badge muted" id="badge-vehicles"></span>
-    </button>
-    <button class="nav-item" data-view="models">
-      <span class="nav-label">Auto Models</span>
-      <span class="nav-badge muted" id="badge-models"></span>
-    </button>
-    <button class="nav-item" data-view="trips">
-      <span class="nav-label">Visit Log</span>
-      <span class="nav-badge muted" id="badge-trips"></span>
-    </button>
+
+    <div class="nav-group" data-group="autor">
+      <button class="nav-item nav-head" data-toggle="autor" aria-expanded="true" aria-controls="sub-autor">
+        <span class="nav-label">AutoR Mgr</span>
+        <span class="nav-badge danger" id="rollup-autor"></span>
+        <span class="nav-caret" aria-hidden="true"></span>
+      </button>
+      <div class="nav-sub" id="sub-autor">
+        <button class="nav-item nav-child" data-view="drivers">
+          <span class="nav-label">Drivers</span>
+          <span class="nav-badge muted" id="badge-drivers"></span>
+        </button>
+        <button class="nav-item nav-child" data-view="vehicles">
+          <span class="nav-label">Vehicles</span>
+          <span class="nav-badge muted" id="badge-vehicles"></span>
+        </button>
+        <button class="nav-item nav-child" data-view="models">
+          <span class="nav-label">Auto Models</span>
+          <span class="nav-badge muted" id="badge-models"></span>
+        </button>
+      </div>
+    </div>
+
+    <div class="nav-group" data-group="area">
+      <button class="nav-item nav-head" data-toggle="area" aria-expanded="true" aria-controls="sub-area">
+        <span class="nav-label">Area Mgr</span>
+        <span class="nav-badge danger" id="rollup-area"></span>
+        <span class="nav-caret" aria-hidden="true"></span>
+      </button>
+      <div class="nav-sub" id="sub-area">
+        <button class="nav-item nav-child" data-view="map">
+          <span class="nav-label">Coverage Map</span>
+        </button>
+        <button class="nav-item nav-child" data-view="hunter">
+          <span class="nav-label">Auto Hunter</span>
+          <span class="nav-badge muted" id="badge-hunter"></span>
+        </button>
+        <button class="nav-item nav-child" data-view="coverage">
+          <span class="nav-label">Needs Coverage</span>
+          <span class="nav-badge danger" id="badge-coverage"></span>
+        </button>
+        <button class="nav-item nav-child" data-view="areas">
+          <span class="nav-label">Areas</span>
+          <span class="nav-badge muted" id="badge-areas"></span>
+        </button>
+      </div>
+    </div>
+
+    <div class="nav-group" data-group="day">
+      <button class="nav-item nav-head" data-toggle="day" aria-expanded="true" aria-controls="sub-day">
+        <span class="nav-label">Day Planner</span>
+        <span class="nav-badge danger" id="rollup-day"></span>
+        <span class="nav-caret" aria-hidden="true"></span>
+      </button>
+      <div class="nav-sub" id="sub-day">
+        <button class="nav-item nav-child" data-view="plan">
+          <span class="nav-label">Plan a Day</span>
+        </button>
+        <button class="nav-item nav-child" data-view="trips">
+          <span class="nav-label">Visit Log</span>
+          <span class="nav-badge muted" id="badge-trips"></span>
+        </button>
+      </div>
+    </div>
+
     <button class="nav-item" data-view="settings">
       <span class="nav-label">Settings</span>
       <span class="nav-badge warn" id="badge-settings"></span>

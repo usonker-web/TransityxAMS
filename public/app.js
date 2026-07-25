@@ -1033,11 +1033,66 @@ function paintBadges() {
   $('#badge-models').textContent = s.modelCount;
   $('#badge-trips').textContent = s.tripsDone || '';
   $('#badge-settings').textContent = S.data.settings.mapsApiKey ? '' : 'key';
+  // The collapsed-group roll-up is read off these badges, so it has to be
+  // recomputed whenever they change and not only when the screen does.
+  paintNav();
+}
+
+/**
+ * Which group each screen lives under. Kept here rather than read back out of
+ * the DOM so that go() can open the right group even when the click came from
+ * somewhere else entirely — a "Open drivers" button on the map, say.
+ */
+const NAV_GROUP = {
+  drivers: 'autor', vehicles: 'autor', models: 'autor',
+  map: 'area', hunter: 'area', coverage: 'area', areas: 'area',
+  plan: 'day', trips: 'day',
+};
+
+const navOpen = () => {
+  try {
+    const raw = JSON.parse(localStorage.getItem('ramaNav') ?? 'null');
+    // Everything open on a first visit: a menu that starts shut hides the app
+    // from someone who has never seen it.
+    return Array.isArray(raw) ? new Set(raw) : new Set(['autor', 'area', 'day']);
+  } catch { return new Set(['autor', 'area', 'day']); }
+};
+
+function paintNav() {
+  const open = navOpen();
+  for (const g of $$('.nav-group')) {
+    const name = g.dataset.group;
+    // The group holding the current screen stays open whatever was saved —
+    // a highlighted row inside a collapsed group is a highlight nobody can see.
+    const on = open.has(name) || NAV_GROUP[S.view] === name;
+    g.classList.toggle('open', on);
+    g.querySelector('.nav-head')?.setAttribute('aria-expanded', String(on));
+
+    // Collapsed, the group speaks for its children: the critical-areas count is
+    // the one number worth interrupting someone over, and burying it inside a
+    // shut group would quietly switch that warning off.
+    const rollup = $(`#rollup-${name}`);
+    if (rollup) {
+      const hidden = !on;
+      const danger = [...g.querySelectorAll('.nav-sub .nav-badge.danger')]
+        .reduce((n, b) => n + (Number(b.textContent) || 0), 0);
+      rollup.textContent = hidden && danger ? String(danger) : '';
+    }
+  }
+}
+
+function toggleNavGroup(name) {
+  const open = navOpen();
+  if (open.has(name)) open.delete(name);
+  else open.add(name);
+  try { localStorage.setItem('ramaNav', JSON.stringify([...open])); } catch {}
+  paintNav();
 }
 
 function go(view) {
   S.view = view;
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  paintNav();
   const main = $('#main');
   // Full-bleed screens: the map fills the pane itself, so the usual page padding
   // would leave a border of background around it.
@@ -1080,7 +1135,7 @@ function viewToday() {
   $('#main').innerHTML = `
     <div class="page-head">
       <div>
-        <div class="page-title">Today</div>
+        <div class="page-title">Home</div>
         <div class="page-sub">${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
       </div>
       <div class="page-actions">
@@ -4086,7 +4141,9 @@ function wireCommon() {
 }
 
 async function boot() {
-  $$('.nav-item').forEach((b) => (b.onclick = () => go(b.dataset.view)));
+  $$('.nav-item').forEach((b) => (b.onclick = () => (
+    b.dataset.toggle ? toggleNavGroup(b.dataset.toggle) : go(b.dataset.view)
+  )));
   $('#scrim').onclick = closeDrawer;
   $('#btn-plan-today').onclick = () => go('plan');
   $('#btn-sign-out').onclick = async () => {
