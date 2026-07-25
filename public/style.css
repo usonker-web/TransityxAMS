@@ -455,6 +455,36 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
   font-size: 14px; line-height: 1; padding: 0 2px;
 }
 .hunt-chip button:hover { color: var(--red); }
+/* A focused auto's chip carries its own colour, so the chip, the line on the
+   map and the hover card all obviously refer to the same vehicle. */
+.hunt-chip.focus { border-width: 1px; padding-left: 7px; }
+.hunt-chip-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+
+.hunt-rule { border-top: 1px solid var(--line); margin: 2px 0 -4px; }
+
+/* driver / auto search results */
+.hunt-found {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; text-align: left; cursor: pointer; font-family: inherit;
+  background: none; border: 1px solid transparent; border-left: 3px solid var(--auto, transparent);
+  border-radius: var(--r); padding: 6px 8px; color: var(--text);
+}
+.hunt-found:hover { background: var(--panel); }
+.hunt-found.on { background: var(--panel-2); border-color: var(--line-2); border-left-color: var(--auto); }
+.hunt-found-main { display: flex; flex-direction: column; min-width: 0; }
+.hunt-found-name {
+  font-size: 12.5px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hunt-found-sub { font-size: 11px; color: var(--dim); }
+.hunt-found-n { font: 600 10.5px var(--mono); color: var(--teal-hi); flex: none; }
+/* Nothing to spotlight for him yet — say so rather than offering a dead click. */
+.hunt-found.unmapped .hunt-found-n { color: var(--amber); font-weight: 400; }
+.hunt-found.unmapped .hunt-found-name { color: var(--muted); }
+
+.hunt-driver { cursor: pointer; }
+.hunt-driver:hover { border-color: var(--line-2); }
+.hunt-driver.on { border-color: var(--amber); background: var(--panel-2); }
 
 /* The area picker. Capped so a long list scrolls inside the panel instead of
    pushing the answer below the fold — the answer is the point of the screen. */

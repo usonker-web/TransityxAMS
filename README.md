@@ -194,6 +194,24 @@ driver behind that number with his phone, his fleet, and the rest of his patch.
 Pick several areas and the list re-sorts so whoever covers the most of what the
 client asked for is at the top, with *"covers 2 of 3"* on each card.
 
+### Or the other way round: find one auto
+
+The second search box asks the reverse question — *where does this one go?* —
+and takes a **name, a phone number, or a number plate**.
+
+Pick him and the map goes to his patch: his lines come forward in his own
+colour, every other auto recedes, and the areas he does not touch step back so
+his shape is the only thing left standing. **Show everything again** puts the
+fleet back. Clicking any card in the area answer does the same thing, while
+clicking his *name* opens his record — two different intentions, two different
+clicks.
+
+Drivers nobody has asked yet are still listed, marked **not mapped**. There is
+nothing to put on the map for them, so choosing one opens his record instead,
+which is where the areas get filled in. Being told *"he exists, but nobody has
+asked him"* is a real answer; leaving him out of the search would just look like
+he was not in your list at all.
+
 ### What the lines mean
 
 Every **pair** of one driver's areas, joined by a straight line. Not a tour in

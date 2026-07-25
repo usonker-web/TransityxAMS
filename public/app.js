@@ -31,7 +31,8 @@ const S = {
   },
   mapColor: 'coverage',
   mapLayer: 'circles',  // circles | coverage | demand | gap
-  hunterPick: new Set(), // areaIds a client has asked about, on Auto Hunter
+  hunterPick: new Set(),  // areaIds a client has asked about, on Auto Hunter
+  hunterFocus: new Set(), // contactIds spotlighted on Auto Hunter
   heat: null,           // blob size + intensity; filled from localStorage at boot
 };
 
@@ -288,6 +289,7 @@ const MapView = {
   setLineHighlight(group) { return this.impl.setLineHighlight(group); },
   clearLines() { return this.impl.clearLines(); },
   fit() { return this.impl.fit(); },
+  fitTo(points) { return this.impl.fitTo(points); },
   heat(points) { return this.impl.heat(points, S.heat); },
   tuneHeat() { return this.impl.tuneHeat(S.heat); },
   clearHeat() { return this.impl.clearHeat(); },
@@ -611,6 +613,16 @@ const LeafletImpl = {
     const b = this.layer.getBounds?.();
     if (b?.isValid()) this.map.fitBounds(b.pad(0.12));
   },
+
+  /** Frame an arbitrary set of points — used to go to one auto's patch. */
+  fitTo(points) {
+    if (!points.length) return;
+    // One area has no extent to fit, and fitBounds on a zero-size box slams the
+    // map to maximum zoom — a street corner instead of a neighbourhood.
+    if (points.length === 1) return this.map.setView([points[0].lat, points[0].lng], 13);
+    const b = L.latLngBounds(points.map((p) => [p.lat, p.lng]));
+    if (b.isValid()) this.map.fitBounds(b.pad(0.25), { maxZoom: 14 });
+  },
 };
 
 // ---------------------------------------------------------------- Google
@@ -852,6 +864,20 @@ const GoogleImpl = {
     const b = new google.maps.LatLngBounds();
     for (const m of this.mks) b.extend(m.getPosition());
     this.map.fitBounds(b, 48);
+  },
+
+  /** Frame an arbitrary set of points — used to go to one auto's patch. */
+  fitTo(points) {
+    if (!points.length) return;
+    // See the Leaflet note: a zero-size box fits to maximum zoom.
+    if (points.length === 1) {
+      this.map.setCenter({ lat: points[0].lat, lng: points[0].lng });
+      this.map.setZoom(13);
+      return;
+    }
+    const b = new google.maps.LatLngBounds();
+    for (const p of points) b.extend({ lat: p.lat, lng: p.lng });
+    this.map.fitBounds(b, 80);
   },
 };
 
@@ -1875,6 +1901,12 @@ function hunterColor(id) {
 function viewHunter() {
   const { routes, askedCount, activeCount } = hunterRoutes();
   const sel = S.hunterPick;
+  const focus = S.hunterFocus;
+  const routeOf = new Map(routes.map((r) => [r.contact.id, r]));
+
+  // A driver focused earlier may since have been deleted, or had his areas
+  // cleared. Drop him rather than carrying a chip that points at nothing.
+  for (const id of [...focus]) if (!routeOf.has(id)) focus.delete(id);
 
   // How many autos (not drivers) serve each area — the number a client cares
   // about is vehicles carrying the ad, not people signed.
@@ -1935,6 +1967,17 @@ function viewHunter() {
 
         <div class="hunt-list" id="hunt-areas"></div>
 
+        <div class="hunt-rule"></div>
+
+        <div>
+          <div class="card-title" style="margin-bottom:6px">Or find one auto</div>
+          <input type="text" id="hunt-dq" placeholder="Name, phone or number plate…" autocomplete="off">
+          <div class="field-hint" style="margin-top:5px">Shows where that one goes, and dims the rest.</div>
+          <div class="hunt-picked" id="hunt-focused"></div>
+        </div>
+
+        <div class="hunt-list" id="hunt-found"></div>
+
         <div id="hunt-result"></div>
 
         <div class="map-legend">
@@ -1961,13 +2004,24 @@ function viewHunter() {
     if (!MapView.ready || !MapView.impl) return;
     const hits = new Set(matching().map((x) => x.r.contact.id));
 
+    // Focusing one auto by name is a narrower question than "who serves this
+    // area", so when both are active the spotlight wins the map. The answer
+    // panel below still belongs to the areas — the two questions stay separate.
+    const on_ = (id) => (focus.size ? focus.has(id) : sel.size ? hits.has(id) : false);
+    const dim_ = (id) => (focus.size ? !focus.has(id) : sel.size ? !hits.has(id) : false);
+
+    // Which areas the spotlit autos actually touch, so everywhere else can step
+    // back and leave the answer standing on its own.
+    const litAreas = new Set();
+    if (focus.size) for (const id of focus) for (const a of routeOf.get(id)?.areaIds ?? []) litAreas.add(a);
+
     const segs = [];
     for (const r of routes) {
-      const on = sel.size > 0 && hits.has(r.contact.id);
+      const on = on_(r.contact.id);
       // Everything unselected stays visible but recedes. Hiding it would throw
       // away the reason to look at this screen at all — the shape of where the
       // whole fleet goes is the context that makes one answer meaningful.
-      const dim = sel.size > 0 && !on;
+      const dim = dim_(r.contact.id);
       // Fleet size, flattened. A 10-auto owner should read as heavier than a
       // solo driver without being ten times the width and swallowing the map.
       // The floor is deliberate: Google has no hover tolerance, so a line has to
@@ -1997,15 +2051,20 @@ function viewHunter() {
         const autos = autosByArea.get(a.id) ?? 0;
         const starts = startAutos.get(a.id) ?? 0;
         const picked = sel.has(a.id);
+        // With a spotlight on, anywhere the spotlit autos do not go steps back
+        // too — otherwise the dots keep advertising a fleet you are not looking
+        // at and the one auto's shape never emerges.
+        const off = focus.size > 0 && !litAreas.has(a.id);
         return {
           id: a.id,
           lat: a.lat,
           lng: a.lng,
           // Picked beats based beats passed-through. Green outranks the plain
           // coverage colour because "the autos live here" is the stronger fact.
-          color: picked ? HUNTER_PICK : starts ? HUNTER_START : autos ? HUNTER_THRU : '#3a4859',
-          size: picked ? 20 : autos ? 15 : 8,
-          label: autos ? String(autos) : '',
+          color: off ? '#2b3542'
+            : picked ? HUNTER_PICK : starts ? HUNTER_START : autos ? HUNTER_THRU : '#3a4859',
+          size: off ? 7 : picked ? 20 : autos ? 15 : 8,
+          label: off ? '' : autos ? String(autos) : '',
           title: `${a.name} — ${autos} auto${autos === 1 ? '' : 's'} from `
                + `${driversByArea.get(a.id) ?? 0} driver(s)`
                + (starts ? `, ${starts} starting here` : ''),
@@ -2092,6 +2151,82 @@ function viewHunter() {
     $$('#hunt-areas [data-pick]').forEach((b) => (b.onclick = () => toggle(b.dataset.pick)));
   };
 
+  // ---- finding one auto: the reverse of the area question
+
+  const paintFocused = () => {
+    $('#hunt-focused').innerHTML = focus.size
+      ? [...focus].map((id) => {
+        const r = routeOf.get(id);
+        return `<span class="hunt-chip focus" style="border-color:${hunterColor(id)}">
+          <span class="hunt-chip-dot" style="background:${hunterColor(id)}"></span>${esc(r.contact.name)}
+          <button data-unfocus="${id}" aria-label="Remove">×</button></span>`;
+      }).join('')
+        + '<button class="btn btn-sm" id="hunt-unfocus-all" style="margin-top:8px">Show everything again</button>'
+      : '';
+    $$('#hunt-focused [data-unfocus]').forEach((b) => (b.onclick = () => toggleFocus(b.dataset.unfocus)));
+    const c = $('#hunt-unfocus-all');
+    if (c) c.onclick = () => { focus.clear(); paintAll(); };
+  };
+
+  const paintFound = () => {
+    const q = ($('#hunt-dq')?.value ?? '').trim().toLowerCase();
+    const box = $('#hunt-found');
+    if (!q) { box.innerHTML = ''; return; }
+
+    const digits = q.replace(/\D/g, '');
+    // Searched across every active driver, not just the mapped ones. Being told
+    // "he is here, but nobody has asked him where he works" is a useful answer;
+    // silence looks like the driver does not exist.
+    const found = S.data.contacts
+      .filter((c) => !c.status || c.status === 'active')
+      .filter((c) => {
+        if (c.name?.toLowerCase().includes(q)) return true;
+        if (digits && (c.phones ?? [c.phone]).some((p) => String(p ?? '').includes(digits))) return true;
+        return (c.vehicles ?? []).some((v) => String(v.number ?? '').toLowerCase().includes(q));
+      })
+      .slice(0, 25);
+
+    box.innerHTML = found.length
+      ? found.map((c) => {
+        const r = routeOf.get(c.id);
+        const autos = Math.max(1, c.fleetSize ?? 1);
+        return `<button class="hunt-found ${focus.has(c.id) ? 'on' : ''} ${r ? '' : 'unmapped'}"
+            data-focus="${c.id}" ${r ? `style="--auto:${hunterColor(c.id)}"` : ''}>
+            <span class="hunt-found-main">
+              <span class="hunt-found-name">${esc(c.name)}</span>
+              <span class="hunt-found-sub">${autos} auto${autos === 1 ? '' : 's'}${
+                c.phone ? ` · ${esc(c.phone)}` : ''}</span>
+            </span>
+            <span class="hunt-found-n">${r ? `${r.areaIds.size} areas` : 'not mapped'}</span>
+          </button>`;
+      }).join('')
+      : '<div class="dim" style="font-size:12px">Nobody matches that name, number or plate.</div>';
+
+    $$('#hunt-found [data-focus]').forEach((b) => (b.onclick = () => {
+      const id = b.dataset.focus;
+      // Nothing to spotlight for a driver with no areas recorded — so send the
+      // user where they can fix that instead of doing nothing at all.
+      if (!routeOf.has(id)) {
+        toast('No areas recorded for him yet — fill in "Where he works"', 'bad');
+        return openContact(id);
+      }
+      toggleFocus(id);
+    }));
+  };
+
+  function toggleFocus(id) {
+    const adding = !focus.has(id);
+    if (adding) focus.add(id);
+    else focus.delete(id);
+    paintAll();
+    // Go to him. An auto you searched for by name is one you cannot yet see, so
+    // leaving the map where it was would be answering the question off-screen.
+    if (adding && MapView.ready && MapView.impl) {
+      const pts = [...focus].flatMap((x) => routeOf.get(x)?.nodes ?? []);
+      MapView.fitTo(pts);
+    }
+  }
+
   const paintResult = () => {
     const box = $('#hunt-result');
     if (!sel.size) { box.innerHTML = ''; return; }
@@ -2119,7 +2254,8 @@ function viewHunter() {
         : ''}
       <div class="hunt-drivers">
         ${hits.map(({ r, hits: n }) => `
-          <div class="hunt-driver">
+          <div class="hunt-driver ${focus.has(r.contact.id) ? 'on' : ''}"
+               data-focus-c="${r.contact.id}" title="Click to show only this auto on the map">
             <div class="hunt-driver-top">
               <button class="hunt-driver-name" data-open-c="${r.contact.id}">${esc(r.contact.name)}</button>
               <span class="hunt-driver-n">${r.autos} auto${r.autos === 1 ? '' : 's'}</span>
@@ -2134,12 +2270,20 @@ function viewHunter() {
           </div>`).join('')}
       </div>`;
 
-    $$('#hunt-result [data-open-c]').forEach((b) => (b.onclick = () => openContact(b.dataset.openC)));
+    // The card spotlights him on the map; his name opens his record. Two
+    // different intentions, so the name stops the click going any further.
+    $$('#hunt-result [data-focus-c]').forEach((el) => (el.onclick = () => toggleFocus(el.dataset.focusC)));
+    $$('#hunt-result [data-open-c]').forEach((b) => (b.onclick = (e) => {
+      e.stopPropagation();
+      openContact(b.dataset.openC);
+    }));
   };
 
   const paintAll = () => {
     paintPicked();
     paintAreaList();
+    paintFocused();
+    paintFound();
     paintResult();
     paintMap();
     wireCommon();
@@ -2152,8 +2296,11 @@ function viewHunter() {
   }
 
   $('#hunt-q').oninput = paintAreaList;
+  $('#hunt-dq').oninput = paintFound;
   paintPicked();
   paintAreaList();
+  paintFocused();
+  paintFound();
   paintResult();
   wireCommon();
 
