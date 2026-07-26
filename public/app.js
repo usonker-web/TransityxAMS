@@ -38,8 +38,8 @@ const S = {
   mapLayer: 'circles',  // circles | coverage | demand | gap
   hunterPick: new Set(),  // areaIds a client has asked about, on Auto Hunter
   hunterFocus: new Set(), // contactIds spotlighted on Auto Hunter
-  hunterMode: 'routes',   // routes | districts
-  hunterDistrict: null,   // district clicked and kept, on the district map
+  hunterMode: 'routes',   // routes | subdistricts | districts
+  hunterDistrict: null,   // boundary clicked and kept, on either district map
   heat: null,           // blob size + intensity; filled from localStorage at boot
 };
 
@@ -191,7 +191,7 @@ async function refresh() {
   // Which autos cross which district is derived from the routes, so it stops
   // being true the moment anybody's areas change. The boundaries themselves are
   // fixed and stay loaded.
-  DISTRICT_ROUTES = null;
+  clearShapeRoutes();
   paintBadges();
 }
 
@@ -2058,7 +2058,7 @@ const HUNTER_COLORS = [
   '#a855f7', '#0ea5e9', '#fb7185', '#22d3ee', '#c084fc', '#60a5fa',
 ];
 /**
- * DISTRICTS — Delhi's eleven revenue districts, as real boundaries.
+ * BOUNDARIES — Delhi's administrative areas, as their real shapes.
  *
  * An auto "travels through" a district if any of its areas sits inside that
  * district, or if any of the straight lines between its areas crosses it. The
@@ -2069,15 +2069,31 @@ const HUNTER_COLORS = [
  * The lines are straight rather than real roads, so this claims what the rest of
  * the screen claims — that his patch spans those two places — and no more.
  */
-let DISTRICTS = null;      // loaded once, lazily, from /districts.json
-let DISTRICT_ROUTES = null; // district name -> Set of contact ids, cached
+/**
+ * Two levels, because "district" means different things to different clients.
+ * Delhi's eleven revenue districts are the coarse answer; its twenty-seven
+ * sub-districts are the same administrative hierarchy one step down, and they
+ * are named after the places this planner already works in — Karol Bagh, Preet
+ * Vihar, Hauz Khas. Twenty-three of the twenty-seven contain at least one area
+ * from the roster, against 5.8 areas crammed into each district.
+ */
+const SHAPE_LAYERS = {
+  districts: { file: '/districts.json', one: 'district', many: 'districts', shapes: null, routes: null },
+  subdistricts: { file: '/subdistricts.json', one: 'sub-district', many: 'sub-districts', shapes: null, routes: null },
+};
 
-async function loadDistricts() {
-  if (DISTRICTS) return DISTRICTS;
-  const res = await fetch('/districts.json');
-  if (!res.ok) throw new Error(`Could not load the district boundaries (${res.status}).`);
+/** Derived from the routes, so any edit to who works where invalidates it. */
+function clearShapeRoutes() {
+  for (const layer of Object.values(SHAPE_LAYERS)) layer.routes = null;
+}
+
+async function loadShapes(kind) {
+  const layer = SHAPE_LAYERS[kind];
+  if (layer.shapes) return layer.shapes;
+  const res = await fetch(layer.file);
+  if (!res.ok) throw new Error(`Could not load the ${layer.one} boundaries (${res.status}).`);
   const geo = await res.json();
-  DISTRICTS = geo.features.map((f) => {
+  layer.shapes = geo.features.map((f) => {
     // One bounding box per district turns most of the work below into a single
     // comparison. Without it this is a million edge tests on every repaint.
     let minLng = 1e9, minLat = 1e9, maxLng = -1e9, maxLat = -1e9;
@@ -2089,9 +2105,16 @@ async function loadDistricts() {
         if (lat > maxLat) maxLat = lat;
       }
     }
-    return { name: f.properties.name, rings: f.geometry.coordinates, bbox: [minLng, minLat, maxLng, maxLat] };
+    return {
+      name: f.properties.name,
+      // Sub-districts carry the district they sit in, so a shape can say
+      // "Karol Bagh, in Central" rather than just its own name.
+      parent: f.properties.district ?? '',
+      rings: f.geometry.coordinates,
+      bbox: [minLng, minLat, maxLng, maxLat],
+    };
   });
-  return DISTRICTS;
+  return layer.shapes;
 }
 
 /** Ray casting. Rings are [lng, lat] pairs, as GeoJSON stores them. */
@@ -2114,9 +2137,9 @@ const segmentsCross = (ax, ay, bx, by, cx, cy, dx, dy) =>
   ccw(ax, ay, cx, cy, dx, dy) !== ccw(bx, by, cx, cy, dx, dy)
   && ccw(ax, ay, bx, by, cx, cy) !== ccw(ax, ay, bx, by, dx, dy);
 
-function segmentTouchesDistrict(a, b, d) {
+function segmentTouchesShape(a, b, d) {
   // Reject on bounding boxes first — most segments are nowhere near most
-  // districts, and this is the difference between instant and sluggish.
+  // shapes, and this is the difference between instant and sluggish.
   const [minLng, minLat, maxLng, maxLat] = d.bbox;
   if (Math.max(a.lng, b.lng) < minLng || Math.min(a.lng, b.lng) > maxLng) return false;
   if (Math.max(a.lat, b.lat) < minLat || Math.min(a.lat, b.lat) > maxLat) return false;
@@ -2131,19 +2154,20 @@ function segmentTouchesDistrict(a, b, d) {
   return false;
 }
 
-/** district name -> Set of contact ids whose patch touches it. Computed once. */
-function districtRoutes(routes) {
-  if (DISTRICT_ROUTES) return DISTRICT_ROUTES;
-  const out = new Map(DISTRICTS.map((d) => [d.name, new Set()]));
-  for (const d of DISTRICTS) {
+/** shape name -> Set of contact ids whose patch touches it. Computed once per layer. */
+function shapeRoutes(kind, routes) {
+  const layer = SHAPE_LAYERS[kind];
+  if (layer.routes) return layer.routes;
+  const out = new Map(layer.shapes.map((d) => [d.name, new Set()]));
+  for (const d of layer.shapes) {
     const hit = out.get(d.name);
     for (const r of routes) {
-      // An area of his inside the district settles it without touching a line.
+      // An area of his inside the shape settles it without touching a line.
       if (r.nodes.some((n) => pointInRings(n.lng, n.lat, d.rings))) { hit.add(r.contact.id); continue; }
-      if (r.pairs.some(([a, b]) => segmentTouchesDistrict(a, b, d))) hit.add(r.contact.id);
+      if (r.pairs.some(([a, b]) => segmentTouchesShape(a, b, d))) hit.add(r.contact.id);
     }
   }
-  DISTRICT_ROUTES = out;
+  layer.routes = out;
   return out;
 }
 
@@ -2193,10 +2217,10 @@ function viewHunter() {
     // answer comes from geometry rather than from a list of ticked areas. The
     // rest of the screen — the map highlighting, the driver cards — does not
     // need to know which of the two asked.
-    if (S.hunterMode === 'districts') {
+    if (shapeMode()) {
       const name = liveDistrict();
-      if (!name || !DISTRICTS) return [];
-      const ids = districtRoutes(routes).get(name) ?? new Set();
+      if (!name || !shapesNow()) return [];
+      const ids = shapeRoutes(shapeMode(), routes).get(name) ?? new Set();
       return routes
         .filter((r) => ids.has(r.contact.id))
         .map((r) => ({ r, hits: 1 }))
@@ -2226,7 +2250,8 @@ function viewHunter() {
 
         <div class="seg" id="hunt-mode">
           <button data-mode="routes" title="Every auto's patch, area by area">Routes</button>
-          <button data-mode="districts" title="Delhi's 11 districts — hover one to see who crosses it">District map</button>
+          <button data-mode="subdistricts" title="Delhi's 27 sub-districts — Karol Bagh, Preet Vihar, Hauz Khas">Sub-districts</button>
+          <button data-mode="districts" title="Delhi's 11 revenue districts — the broad answer">Districts</button>
         </div>
 
         ${askedCount === 0 ? `
@@ -2248,10 +2273,10 @@ function viewHunter() {
         </div>
 
         <div id="hunt-districts-wrap" hidden>
-          <div class="card-title" style="margin-bottom:6px">Which district does the client want?</div>
+          <div class="card-title" style="margin-bottom:6px" id="hunt-dist-title">Which area does the client want?</div>
           <div class="field-hint" style="margin-bottom:8px">
-            Hover a district on the map to light it up and mark every auto whose
-            patch crosses it. Click to keep it.
+            Hover one on the map to light it up and mark every auto whose patch
+            crosses it. Click to keep it.
           </div>
           <div class="hunt-list" id="hunt-dist-list"></div>
         </div>
@@ -2410,19 +2435,23 @@ function viewHunter() {
     if (MapView.ready && MapView.impl) MapView.setLineHighlight(null);
   };
 
-  // ---- districts
+  // ---- districts and sub-districts, which behave identically
 
   const DISTRICT_FILL = '#00c2e0';
   const DISTRICT_LIT = '#f59e0b';
 
-  /** Whichever district is being pointed at, or the one clicked and kept. */
+  /** null on the Routes screen, otherwise which layer of boundaries is on. */
+  const shapeMode = () => (S.hunterMode === 'routes' ? null : S.hunterMode);
+  const shapesNow = () => (shapeMode() ? SHAPE_LAYERS[shapeMode()].shapes : null);
+  /** Whichever shape is being pointed at, or the one clicked and kept. */
   const liveDistrict = () => hoverDistrict ?? S.hunterDistrict;
   let hoverDistrict = null;
 
   const paintDistricts = () => {
-    if (!MapView.ready || !MapView.impl || !DISTRICTS) return;
-    const byDist = districtRoutes(routes);
-    MapView.shapes(DISTRICTS.map((d) => {
+    const shapes = shapesNow();
+    if (!MapView.ready || !MapView.impl || !shapes) return;
+    const byDist = shapeRoutes(shapeMode(), routes);
+    MapView.shapes(shapes.map((d) => {
       const on = liveDistrict() === d.name;
       return {
         key: d.name,
@@ -2468,10 +2497,12 @@ function viewHunter() {
   const showDistrictTip = (name, pt) => {
     const el = $('#hunt-tip');
     if (!el) return;
-    const ids = districtRoutes(routes).get(name) ?? new Set();
+    const shape = (shapesNow() ?? []).find((d) => d.name === name);
+    const ids = shapeRoutes(shapeMode(), routes).get(name) ?? new Set();
     const autos = routes.filter((r) => ids.has(r.contact.id)).reduce((n, r) => n + r.autos, 0);
     el.innerHTML = `
       <div class="hunt-tip-name" style="border-color:${DISTRICT_LIT}">${esc(name)}</div>
+      ${shape?.parent ? `<div class="hunt-tip-sub">in ${esc(shape.parent)} district</div>` : ''}
       <div class="hunt-tip-sub">${autos} auto${autos === 1 ? '' : 's'} from ${ids.size} driver${ids.size === 1 ? '' : 's'} cross${ids.size === 1 ? 'es' : ''} it</div>
       ${ids.size ? '' : '<div class="hunt-tip-sub">Nobody you have recorded goes through here.</div>'}`;
     el.hidden = false;
@@ -2480,17 +2511,19 @@ function viewHunter() {
 
   const paintDistList = () => {
     const box = $('#hunt-dist-list');
-    if (!box || !DISTRICTS) return;
-    const byDist = districtRoutes(routes);
+    const shapes = shapesNow();
+    if (!box || !shapes) return;
+    const byDist = shapeRoutes(shapeMode(), routes);
     const live = liveDistrict();
-    box.innerHTML = DISTRICTS
+    box.innerHTML = shapes
       .map((d) => ({ d, ids: byDist.get(d.name) ?? new Set() }))
       .map(({ d, ids }) => ({
         d, ids, autos: routes.filter((r) => ids.has(r.contact.id)).reduce((n, r) => n + r.autos, 0),
       }))
       .sort((a, b) => b.autos - a.autos || a.d.name.localeCompare(b.d.name))
       .map(({ d, autos }) => `
-        <button class="hunt-area ${live === d.name ? 'on' : ''}" data-dist="${esc(d.name)}">
+        <button class="hunt-area ${live === d.name ? 'on' : ''}" data-dist="${esc(d.name)}"
+          ${d.parent ? `title="in ${esc(d.parent)} district"` : ''}>
           <span class="hunt-area-name">${esc(d.name)}</span>
           <span class="hunt-area-n ${autos ? '' : 'zero'}">${autos || '—'}</span>
         </button>`).join('');
@@ -2610,8 +2643,8 @@ function viewHunter() {
 
   const paintResult = () => {
     const box = $('#hunt-result');
-    const district = S.hunterMode === 'districts' ? liveDistrict() : null;
-    const asked = S.hunterMode === 'districts' ? !!district : sel.size > 0;
+    const district = shapeMode() ? liveDistrict() : null;
+    const asked = shapeMode() ? !!district : sel.size > 0;
     if (!asked) { box.innerHTML = ''; return; }
 
     const hits = matching();
@@ -2666,13 +2699,18 @@ function viewHunter() {
   };
 
   const paintMode = () => {
-    const districts = S.hunterMode === 'districts';
+    const kind = shapeMode();
+    const layer = kind ? SHAPE_LAYERS[kind] : null;
     $$('#hunt-mode button').forEach((b) => b.classList.toggle('on', b.dataset.mode === S.hunterMode));
-    $('#hunt-areas-wrap').hidden = districts;
-    $('#hunt-districts-wrap').hidden = !districts;
-    $('#hunt-legend-foot').textContent = districts
-      ? 'A district lights up as you point at it, and so does every auto whose patch crosses it.'
-      : 'Thicker line = more autos. Numbers on the dots are autos.';
+    $('#hunt-areas-wrap').hidden = !!kind;
+    $('#hunt-districts-wrap').hidden = !kind;
+    if (layer) {
+      $('#hunt-dist-title').textContent = `Which ${layer.one} does the client want?`;
+      $('#hunt-legend-foot').textContent =
+        `A ${layer.one} lights up as you point at it, and so does every auto whose patch crosses it.`;
+    } else {
+      $('#hunt-legend-foot').textContent = 'Thicker line = more autos. Numbers on the dots are autos.';
+    }
   };
 
   const paintAll = () => {
@@ -2681,28 +2719,32 @@ function viewHunter() {
     paintAreaList();
     paintFocused();
     paintFound();
-    if (S.hunterMode === 'districts') paintDistList();
+    if (shapeMode()) paintDistList();
     paintResult();
     paintMap();
     if (MapView.ready && MapView.impl) {
-      if (S.hunterMode === 'districts') paintDistricts();
+      if (shapeMode()) paintDistricts();
       else MapView.clearShapes();
     }
     wireCommon();
   };
 
   /**
-   * The boundaries are 40KB and only this one mode needs them, so they are
-   * fetched the first time somebody asks for the district map rather than on
-   * every visit to the screen.
+   * The boundaries are 40-60KB each and only these modes need them, so a layer
+   * is fetched the first time it is asked for rather than on every visit to the
+   * screen. Switching between the two levels clears the kept selection: a
+   * sub-district name is not a district name, so it could not survive anyway.
    */
-  const enterDistricts = async () => {
-    S.hunterMode = 'districts';
+  const enterShapes = async (kind) => {
+    if (S.hunterMode !== kind) S.hunterDistrict = null;
+    S.hunterMode = kind;
+    hoverDistrict = null;
     paintMode();
-    if (!DISTRICTS) {
-      $('#hunt-dist-list').innerHTML = '<div class="dim" style="font-size:12px">Loading district boundaries…</div>';
+    if (!SHAPE_LAYERS[kind].shapes) {
+      $('#hunt-dist-list').innerHTML =
+        `<div class="dim" style="font-size:12px">Loading ${SHAPE_LAYERS[kind].one} boundaries…</div>`;
       try {
-        await loadDistricts();
+        await loadShapes(kind);
       } catch (err) {
         $('#hunt-dist-list').innerHTML = `<div class="note warn">${esc(err.message)}</div>`;
         return;
@@ -2720,7 +2762,7 @@ function viewHunter() {
   $('#hunt-q').oninput = paintAreaList;
   $('#hunt-dq').oninput = paintFound;
   $$('#hunt-mode button').forEach((b) => (b.onclick = () => {
-    if (b.dataset.mode === 'districts') return enterDistricts();
+    if (b.dataset.mode !== 'routes') return enterShapes(b.dataset.mode);
     S.hunterMode = 'routes';
     hoverDistrict = null;
     hideTip();
@@ -2743,12 +2785,12 @@ function viewHunter() {
       // mode was on screen rather than dropping back to bare routes.
       MapView.repaint = async () => {
         paintMap();
-        if (S.hunterMode === 'districts') { await loadDistricts(); paintDistricts(); }
+        if (shapeMode()) { await loadShapes(shapeMode()); paintDistricts(); }
       };
       paintMap();
-      // Coming back to the screen with the district map still selected has to
-      // redraw the boundaries — the map was rebuilt from scratch just now.
-      if (S.hunterMode === 'districts') await enterDistricts();
+      // Coming back to the screen with a boundary layer still selected has to
+      // redraw it — the map was rebuilt from scratch just now.
+      if (shapeMode()) await enterShapes(S.hunterMode);
       MapView.fit();
       $('#hunt-banner').innerHTML = askedCount
         ? `${routes.reduce((n, r) => n + r.autos, 0)} autos mapped across ${autosByArea.size} areas · <span class="dim">click an area to see who covers it</span>`

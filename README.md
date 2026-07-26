@@ -109,8 +109,8 @@ buttons switch to heat. See *The heatmap* below.
 **Auto Hunter** — a client names an area; this says which autos go there. Every
 driver's marked areas are joined by straight lines, all of them at once, so the
 corridors your fleet actually covers show up where the lines pile on top of each
-other. Switch to the **District map** to ask the same question of Delhi's eleven
-districts instead. See *Auto Hunter* below.
+other. Switch to **Sub-districts** or **Districts** to ask the same question of
+Delhi's real administrative boundaries instead. See *Auto Hunter* below.
 
 **Needs Coverage** — the areas flagged as underserved, worst first. The count in
 the menu is the critical ones, and it stays visible even with the group closed.
@@ -274,15 +274,26 @@ The number on a dot is **autos**. Its colour says what kind of presence:
 | **Amber** | An area you picked |
 | **Grey** | Nobody |
 
-### The district map
+### The district maps
 
-The **District map** button swaps the area picker for Delhi's eleven revenue
-districts, drawn as their real boundaries.
+Two levels of real boundaries, either of which replaces the area picker:
+
+- **Sub-districts** — Delhi's 27 tehsils. Named after the places this planner
+  already works in: Karol Bagh, Preet Vihar, Hauz Khas, Connaught Place. 23 of
+  the 27 contain at least one area from your list, about 2.8 areas each
+- **Districts** — the 11 revenue districts, for the broad answer. 5.8 of your
+  areas fall in each, so this is the coarser cut
 
 Point at one and it lights up — and so does **every auto whose patch crosses
 it**, with the rest of the fleet dimming away. The panel lists them, biggest
-fleets first. Click to keep a district selected so you can move the mouse off
-and still read the list.
+fleets first. Click to keep one selected so you can move the mouse off and still
+read the list. A sub-district also says which district it sits in.
+
+> The administrative unit named after a place does not always contain that
+> place. The tehsil called *Shahdara* does not cover the locality everyone calls
+> Shahdara — its neighbour Vivek Vihar does — and the same is true of Connaught
+> Place and Parliament Street. That is how the boundaries are actually drawn,
+> not a fault in the map.
 
 An auto counts as crossing a district if one of its areas sits inside it, **or
 if any line between its areas passes over it**. That second case is the whole
@@ -292,13 +303,14 @@ cares about that. The lines are straight rather than real roads, so this claims
 exactly what the rest of the screen claims — that his patch spans those two
 places — and nothing more.
 
-> **Where the boundaries come from.** `public/districts.json` — the eleven
-> current districts including Shahdara and South East, from
+> **Where the boundaries come from.** `public/districts.json` (11 current
+> districts, including Shahdara and South East) and `public/subdistricts.json`
+> (27 tehsils), both from
 > [datta07/INDIAN-SHAPEFILES](https://github.com/datta07/INDIAN-SHAPEFILES)
 > (MIT), derived from Census of India / LGD boundaries. Simplified for the
-> browser: 8,114 points down to 2,022, 318 KB down to 40 KB, with the worst
-> district's shape moving by 0.05% — invisible at city scale. It is fetched only
-> when the district map is first opened.
+> browser — 318 KB to 40 KB and 440 KB to 61 KB, moving the worst shape by
+> 0.05% and 0.38% respectively, which is invisible at city scale. Each is
+> fetched only the first time that level is opened.
 
 ### It only draws drivers who have been asked
 
