@@ -1368,7 +1368,18 @@ function serveStatic(res, pathname) {
  * stylesheet it wears, the icon, and the auth endpoints. Note that app.js is
  * NOT here — the whole application, not just its data, sits behind the gate.
  */
-const OPEN_PATHS = new Set(['/login', '/style.css', '/favicon.ico']);
+const OPEN_PATHS = new Set([
+  '/login', '/style.css', '/favicon.ico',
+  // Delhi's administrative boundaries. Published government geography, the same
+  // for everyone, and not a word of it is about this company or its drivers —
+  // so the gate protects nothing by holding them back.
+  //
+  // Open for a second reason as well. Behind the gate, a failure to serve these
+  // is invisible from outside: the district map simply does not work and there
+  // is no way to tell a bad deploy from a bad browser cache without the
+  // password. Reachable, they can be checked in one request.
+  '/districts.json', '/subdistricts.json',
+]);
 const isOpen = (p) => OPEN_PATHS.has(p) || p.startsWith('/api/auth/');
 
 async function handleRequest(req, res) {

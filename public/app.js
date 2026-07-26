@@ -2040,6 +2040,7 @@ function hunterRoutes() {
     });
   }
 
+  assignRouteColors(routes);
   return { routes, askedCount, activeCount };
 }
 
@@ -2055,9 +2056,26 @@ function hunterRoutes() {
  * With more drivers than colours these repeat, and that is fine. The colour is
  * there to separate neighbours at a glance; hovering is what names the auto.
  */
+/**
+ * Ten hues, each at least twenty degrees from its neighbours. The first version
+ * of this list had five different blues in twelve entries, which meant two autos
+ * regularly looked identical even when they had been given different colours —
+ * the point of colouring them at all was lost.
+ *
+ * Kept clear of the two colours that already mean something on this screen:
+ * green for where a driver starts, amber for an area you picked.
+ */
 const HUNTER_COLORS = [
-  '#00c2e0', '#8b5cf6', '#ec4899', '#3b82f6', '#f43f5e', '#14b8a6',
-  '#a855f7', '#0ea5e9', '#fb7185', '#22d3ee', '#c084fc', '#60a5fa',
+  '#22d3ee', // cyan
+  '#3b82f6', // blue
+  '#818cf8', // indigo
+  '#a855f7', // purple
+  '#e879f9', // fuchsia
+  '#f472b6', // pink
+  '#fb7185', // rose
+  '#fb923c', // orange
+  '#a3e635', // lime
+  '#94a3b8', // slate
 ];
 /**
  * BOUNDARIES — Delhi's administrative areas, as their real shapes.
@@ -2177,12 +2195,38 @@ const HUNTER_START = '#10b981'; // where he begins his day — where the autos s
 const HUNTER_PICK = '#f59e0b';  // an area you asked about
 const HUNTER_THRU = '#00c2e0';  // he passes through, but does not start here
 
-function hunterColor(id) {
-  // Stable per driver: the same auto keeps its colour between repaints and
-  // between visits, so "the pink one" stays the pink one.
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return HUNTER_COLORS[h % HUNTER_COLORS.length];
+/**
+ * Give every auto on screen its own colour.
+ *
+ * A hash alone is not enough. It is stable, which is what we want — the same
+ * auto keeps its colour between repaints and between visits — but with three
+ * drivers and ten colours two of them will collide often enough to matter, and
+ * on the live roster they did: two of the three marked drivers were handed the
+ * identical blue. So the hash picks a preferred colour and a collision walks to
+ * the next free one, which keeps it stable while guaranteeing that no two autos
+ * share a colour until there are more autos than colours.
+ */
+function assignRouteColors(routes) {
+  const used = new Set();
+  // Sorted, so the assignment depends on who is on the roster and not on the
+  // order they happened to arrive in.
+  for (const r of [...routes].sort((a, b) => a.contact.id.localeCompare(b.contact.id))) {
+    let h = 0;
+    const id = r.contact.id;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    // Once every colour is spoken for, begin a fresh round rather than pushing
+    // everybody onto whichever slot happens to be free.
+    if (used.size >= HUNTER_COLORS.length) used.clear();
+    let slot = h % HUNTER_COLORS.length;
+    // Step THREE colours on a clash, not one. The palette runs round the colour
+    // wheel, so the next slot along is the nearest hue there is — resolving a
+    // collision into it produces two autos that are technically different
+    // colours and look the same anyway. Three is coprime with ten, so this
+    // still reaches every slot before repeating.
+    while (used.has(slot)) slot = (slot + 3) % HUNTER_COLORS.length;
+    used.add(slot);
+    r.color = HUNTER_COLORS[slot];
+  }
 }
 
 function viewHunter() {
@@ -2349,7 +2393,7 @@ function viewHunter() {
       for (const [a, b] of r.pairs) {
         segs.push({
           a, b,
-          color: hunterColor(r.contact.id),
+          color: r.color,
           weight: on ? weight + 1 : weight,
           // Dormant by default so the map reads as a quiet web rather than a
           // shout; hovering is what brings one auto forward.
@@ -2403,7 +2447,7 @@ function viewHunter() {
     const c = r.contact;
     const plates = (c.vehicles ?? []).map((v) => v.number).filter(Boolean);
     el.innerHTML = `
-      <div class="hunt-tip-name" style="border-color:${hunterColor(c.id)}">${esc(c.name)}</div>
+      <div class="hunt-tip-name" style="border-color:${r.color}">${esc(c.name)}</div>
       <div class="hunt-tip-sub">${r.autos} auto${r.autos === 1 ? '' : 's'}${
         c.phone ? ` · ${esc(c.phone)}` : ''}</div>
       ${plates.length ? `<div class="hunt-tip-plates">${
@@ -2585,8 +2629,8 @@ function viewHunter() {
     $('#hunt-focused').innerHTML = focus.size
       ? [...focus].map((id) => {
         const r = routeOf.get(id);
-        return `<span class="hunt-chip focus" style="border-color:${hunterColor(id)}">
-          <span class="hunt-chip-dot" style="background:${hunterColor(id)}"></span>${esc(r.contact.name)}
+        return `<span class="hunt-chip focus" style="border-color:${r.color}">
+          <span class="hunt-chip-dot" style="background:${r.color}"></span>${esc(r.contact.name)}
           <button data-unfocus="${id}" aria-label="Remove">×</button></span>`;
       }).join('')
         + '<button class="btn btn-sm" id="hunt-unfocus-all" style="margin-top:8px">Show everything again</button>'
@@ -2619,7 +2663,7 @@ function viewHunter() {
         const r = routeOf.get(c.id);
         const autos = Math.max(1, c.fleetSize ?? 1);
         return `<button class="hunt-found ${focus.has(c.id) ? 'on' : ''} ${r ? '' : 'unmapped'}"
-            data-focus="${c.id}" ${r ? `style="--auto:${hunterColor(c.id)}"` : ''}>
+            data-focus="${c.id}" ${r ? `style="--auto:${r.color}"` : ''}>
             <span class="hunt-found-main">
               <span class="hunt-found-name">${esc(c.name)}</span>
               <span class="hunt-found-sub">${autos} auto${autos === 1 ? '' : 's'}${
