@@ -288,10 +288,17 @@ Two levels of real boundaries, either of which replaces the area picker:
 - **Districts** — the 11 revenue districts, for the broad answer. 5.8 of your
   areas fall in each, so this is the coarser cut
 
-Point at one and it lights up — and so does **every auto whose patch crosses
-it**, with the rest of the fleet dimming away. The panel lists them, biggest
-fleets first. Click to keep one selected so you can move the mouse off and still
-read the list. A sub-district also says which district it sits in.
+**Search for one by name**, or point at one on the map. Either way it lights up
+— and so does **every auto whose patch crosses it**, with the rest of the fleet
+dimming away. The panel lists them, biggest fleets first. Click to keep one
+selected so you can move the mouse off and still read the list. A sub-district
+also says which district it sits in.
+
+Searching a *district* name while on the sub-district level finds everything
+inside it — type `central` and you get Darya Ganj, Kotwali, Sadar Bazar, Pahar
+Ganj, Karol Bagh and Civil Lines. The search narrows the list only; the
+boundaries stay drawn on the map, because hiding shapes would leave holes in a
+map of Delhi.
 
 > The administrative unit named after a place does not always contain that
 > place. The tehsil called *Shahdara* does not cover the locality everyone calls

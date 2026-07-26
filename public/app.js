@@ -2276,9 +2276,10 @@ function viewHunter() {
 
         <div id="hunt-districts-wrap" hidden>
           <div class="card-title" style="margin-bottom:6px" id="hunt-dist-title">Which area does the client want?</div>
-          <div class="field-hint" style="margin-bottom:8px">
-            Hover one on the map to light it up and mark every auto whose patch
-            crosses it. Click to keep it.
+          <input type="text" id="hunt-dist-q" placeholder="Search…" autocomplete="off">
+          <div class="field-hint" style="margin:6px 0 8px">
+            Or hover one on the map to light it up and mark every auto whose
+            patch crosses it. Click to keep it.
           </div>
           <div class="hunt-list" id="hunt-dist-list"></div>
         </div>
@@ -2517,7 +2518,18 @@ function viewHunter() {
     if (!box || !shapes) return;
     const byDist = shapeRoutes(shapeMode(), routes);
     const live = liveDistrict();
-    box.innerHTML = shapes
+    // Matches the district a sub-district sits in as well as its own name, so
+    // typing "central" finds Darya Ganj and Kotwali and not only Central itself.
+    const q = ($('#hunt-dist-q')?.value ?? '').trim().toLowerCase();
+    const hit = (d) => !q || d.name.toLowerCase().includes(q) || (d.parent ?? '').toLowerCase().includes(q);
+
+    const shown = shapes.filter(hit);
+    if (!shown.length) {
+      box.innerHTML = `<div class="dim" style="font-size:12px">No ${SHAPE_LAYERS[shapeMode()].one} matches that.</div>`;
+      return;
+    }
+
+    box.innerHTML = shown
       .map((d) => ({ d, ids: byDist.get(d.name) ?? new Set() }))
       .map(({ d, ids }) => ({
         d, ids, autos: routes.filter((r) => ids.has(r.contact.id)).reduce((n, r) => n + r.autos, 0),
@@ -2708,6 +2720,9 @@ function viewHunter() {
     $('#hunt-districts-wrap').hidden = !kind;
     if (layer) {
       $('#hunt-dist-title').textContent = `Which ${layer.one} does the client want?`;
+      $('#hunt-dist-q').placeholder = kind === 'subdistricts'
+        ? 'Search — Karol Bagh, Preet Vihar, Hauz Khas…'
+        : 'Search — Central, South West, Shahdara…';
       $('#hunt-legend-foot').textContent =
         `A ${layer.one} lights up as you point at it, and so does every auto whose patch crosses it.`;
     } else {
@@ -2738,7 +2753,12 @@ function viewHunter() {
    * sub-district name is not a district name, so it could not survive anyway.
    */
   const enterShapes = async (kind) => {
-    if (S.hunterMode !== kind) S.hunterDistrict = null;
+    if (S.hunterMode !== kind) {
+      S.hunterDistrict = null;
+      // A search for "Karol Bagh" means nothing in the district list, so the box
+      // is emptied rather than left showing "no district matches that".
+      if ($('#hunt-dist-q')) $('#hunt-dist-q').value = '';
+    }
     S.hunterMode = kind;
     hoverDistrict = null;
     paintMode();
@@ -2763,6 +2783,9 @@ function viewHunter() {
 
   $('#hunt-q').oninput = paintAreaList;
   $('#hunt-dq').oninput = paintFound;
+  // Only the list is repainted — the boundaries on the map are not filtered by
+  // the search, because hiding shapes would leave holes in a map of Delhi.
+  $('#hunt-dist-q').oninput = paintDistList;
   $$('#hunt-mode button').forEach((b) => (b.onclick = () => {
     if (b.dataset.mode !== 'routes') return enterShapes(b.dataset.mode);
     S.hunterMode = 'routes';
