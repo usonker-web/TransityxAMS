@@ -94,6 +94,10 @@ fleet owners, captains, shared numbers, or **one auto model**. Open anyone to
 edit him; **Delete** at the bottom of that panel removes him for good — see
 *Deleting a driver* below, because it interacts with the spreadsheet.
 
+**Captains** — the drivers who bring other drivers, and who answers to each of
+them. Appoint one out of your own roster and put as many drivers under him as
+you like. See *Captains* below.
+
 **Vehicles** — every auto, one row each, with its own page. Who owns it, who
 drives it, whether it runs a dual shift, its papers. See *Autos are not drivers*
 below.
@@ -594,6 +598,50 @@ For a file elsewhere: `node import.js "C:\path\to\file.xlsx"`
 
 ---
 
+## Captains
+
+A captain is one of your own drivers who brings others in. Talking to him is one
+conversation worth however many men answer to him, which is why it is worth
+knowing who they are.
+
+**Appoint a captain** promotes a driver — he keeps his areas, his autos and his
+phone number, because he is still a driver. **Put drivers under him** opens the
+roster with tick boxes; tick as many as you like and they all move at once. A
+driver answers to one captain, so ticking a man who is already under somebody
+else moves him rather than duplicating him.
+
+The links are kept honest in both directions. Demoting a captain releases
+everyone under him, and so does deleting him — a driver left pointing at a man
+who is no longer a captain would appear in nobody's list and not in the
+unassigned count either, which is the kind of record that is invisible until it
+matters.
+
+> Appointing somebody here **outranks the spreadsheet's Captains tab**. Without
+> that, the next `Re-import Excel.bat` would quietly demote anyone you appointed
+> while leaving his men still pointing at him.
+
+---
+
+## The driver's papers
+
+Every field on a driver is optional, and deliberately so — drivers turn up with
+whatever documents they have, and a form that insists on all of them just gets
+filled with dashes. A blank means *not collected*, not *does not exist*.
+
+- **Driving licence**, **badge number** (PSV), **PAN**, **Aadhaar**, **address**
+- **Other documents** — anything else he carries: a permit, insurance, police
+  verification. Name it, and write what matters in its note
+
+These are only ever known from the driver himself, never from the spreadsheet,
+so they survive `Re-import Excel.bat` along with everything else the app owns.
+
+> This is real identity data on real people, sitting behind the one password.
+> Keep that password to the people who need it, and think before adding Aadhaar
+> numbers you do not actually need — the planner does not require any of them to
+> work.
+
+---
+
 ## Autos are not drivers
 
 An auto used to be a line inside its owner's record — readable, not editable. A
@@ -615,7 +663,12 @@ So autos are their own records now, on the **Vehicles** screen. Each one has:
   not three spellings of one name
 - a **dual-shift** tick, for when you know it runs day and night but not yet who
   the second man is. Two drivers already counts as dual without ticking anything
-- papers and money: passing date, finance, parking, where it runs, and notes
+- papers and money: **RC number**, **battery serial**, passing date, finance,
+  parking, where it runs
+- **condition**, one to five stars. Click the star you are on to clear it again.
+  Unrated is its own state, and a different thing from rated poor
+- **notes** — dents, scratches, seat covers, anything that identifies this
+  particular auto on the road
 
 A driver's page now **lists** his autos and links to them, rather than trying to
 hold their details. That is the split: his page is about him, the auto's page is

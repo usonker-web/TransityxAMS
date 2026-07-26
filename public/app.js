@@ -30,6 +30,7 @@ const S = {
     drivers: '', driverZone: '', driverKind: '', driverModel: '', areaZone: '', areaDemand: '',
     coverZone: '', coverLevel: '',
     vehicleQ: '', vehicleModel: '', vehicleShift: '', vehicleStatus: '', vehicleLink: '',
+    captainQ: '',
     // Plan filters live here, not in the DOM: optimising re-renders the view,
     // and a zone sweep that silently forgets your zone is maddening.
     planQ: '', planZone: '', planListOnly: false, planUntapped: false,
@@ -1139,6 +1140,7 @@ function paintBadges() {
   $('#badge-hunter').textContent = S.data.workProgress?.asked ?? 0;
   $('#badge-areas').textContent = s.areas;
   $('#badge-drivers').textContent = s.contacts;
+  $('#badge-captains').textContent = s.captains ?? 0;
   $('#badge-vehicles').textContent = s.vehicles ?? 0;
   $('#badge-models').textContent = s.modelCount;
   $('#badge-trips').textContent = s.tripsDone || '';
@@ -1154,7 +1156,7 @@ function paintBadges() {
  * somewhere else entirely — a "Open drivers" button on the map, say.
  */
 const NAV_GROUP = {
-  drivers: 'autor', vehicles: 'autor', models: 'autor',
+  drivers: 'autor', captains: 'autor', vehicles: 'autor', models: 'autor',
   map: 'area', hunter: 'area', coverage: 'area', areas: 'area',
   plan: 'day', trips: 'day',
 };
@@ -1208,7 +1210,7 @@ function go(view) {
   // would leave a border of background around it.
   main.classList.toggle('no-pad', view === 'map' || view === 'hunter');
   main.scrollTop = 0;
-  ({ today: viewToday, plan: viewPlan, map: viewMap, hunter: viewHunter, coverage: viewCoverage, areas: viewAreas, drivers: viewDrivers, vehicles: viewVehicles, models: viewModels, trips: viewTrips, settings: viewSettings }[view])();
+  ({ today: viewToday, plan: viewPlan, map: viewMap, hunter: viewHunter, coverage: viewCoverage, areas: viewAreas, drivers: viewDrivers, captains: viewCaptains, vehicles: viewVehicles, models: viewModels, trips: viewTrips, settings: viewSettings }[view])();
 }
 
 /**
@@ -3075,6 +3077,198 @@ function viewDrivers() {
   paint();
 }
 
+// ---------------------------------------------------------------- captains
+
+/**
+ * Captains are area leads: drivers who bring other drivers. The roster already
+ * knew who they were — the spreadsheet has a Captains sheet — but not who
+ * answers to whom, which is the thing worth knowing when a captain is the one
+ * conversation that reaches twenty men.
+ *
+ * A captain is a driver, not a separate kind of record. Appointing one is a flag
+ * on his own page, so he keeps his areas, his autos and his phone number.
+ */
+const captainsOf = () => S.data.contacts.filter((c) => c.isCaptain && (!c.status || c.status === 'active'));
+const underCaptain = (id) => S.data.contacts.filter((c) => c.captainId === id);
+
+function viewCaptains() {
+  const caps = captainsOf().slice().sort((a, b) => underCaptain(b.id).length - underCaptain(a.id).length
+    || a.name.localeCompare(b.name));
+  const all = S.data.contacts.filter((c) => !c.status || c.status === 'active');
+  const assigned = all.filter((c) => c.captainId).length;
+  const loose = all.filter((c) => !c.captainId && !c.isCaptain).length;
+
+  $('#main').innerHTML = `
+    <div class="page-head">
+      <div>
+        <div class="page-title">Captains</div>
+        <div class="page-sub">${caps.length} captain${caps.length === 1 ? '' : 's'} ·
+          ${assigned} driver${assigned === 1 ? '' : 's'} reporting to one ·
+          ${loose} not under anybody</div>
+      </div>
+      <div class="page-actions"><button class="btn btn-primary" id="cap-new">+ Appoint a captain</button></div>
+    </div>
+
+    ${caps.length ? '' : `<div class="note" style="margin-bottom:14px">
+      <strong>No captains yet.</strong> A captain is one of your own drivers who
+      brings others in. Appoint one, then put drivers under him — one
+      conversation with a captain is worth however many men answer to him.
+    </div>`}
+
+    <div class="search-bar">
+      <input type="search" id="cap-q" placeholder="Captain or driver name…" value="${esc(S.filter.captainQ)}">
+      <div class="sp"></div>
+      <span class="dim" id="cap-count"></span>
+    </div>
+
+    <div id="cap-list"></div>`;
+
+  const paint = () => {
+    const q = S.filter.captainQ.trim().toLowerCase();
+    const rows = caps
+      .map((cap) => ({ cap, men: underCaptain(cap.id).sort((a, b) => a.name.localeCompare(b.name)) }))
+      .filter(({ cap, men }) => !q || cap.name.toLowerCase().includes(q)
+        || men.some((m) => m.name.toLowerCase().includes(q)));
+
+    $('#cap-count').textContent = `${rows.length} shown · ${rows.reduce((n, r) => n + r.men.length, 0)} drivers under them`;
+    $('#cap-list').innerHTML = rows.length ? rows.map(({ cap, men }) => `
+      <div class="card cap-card">
+        <div class="cap-head">
+          <div>
+            <button class="cap-name" data-open-c="${cap.id}">${esc(cap.name)}</button>
+            <span class="chip chip-amber">captain</span>
+            <div class="cap-sub">${esc(areaName(cap.areaId))}${cap.phone ? ` · <a class="tel" href="tel:${esc(cap.phone)}">${esc(cap.phone)}</a>` : ''}</div>
+          </div>
+          <div style="text-align:right">
+            <div class="cap-count">${men.length}</div>
+            <div class="cap-sub">under him</div>
+          </div>
+        </div>
+        <div class="cap-men">
+          ${men.length ? men.map((m) => `
+            <span class="cap-man">
+              <button data-open-c="${m.id}">${esc(m.name)}</button>
+              <span class="cap-man-n">${m.fleetSize ?? 0} auto${(m.fleetSize ?? 0) === 1 ? '' : 's'}</span>
+              <button class="cap-man-x" data-release="${m.id}" title="Take him out from under ${esc(cap.name)}">×</button>
+            </span>`).join('')
+            : '<span class="dim" style="font-size:12.5px">Nobody under him yet.</span>'}
+        </div>
+        <button class="btn btn-sm" data-assign="${cap.id}" style="margin-top:10px">+ Put drivers under him</button>
+      </div>`).join('')
+      : '<div class="empty">Nobody matches that.</div>';
+
+    $$('#cap-list [data-open-c]').forEach((b) => (b.onclick = () => openContact(b.dataset.openC)));
+    $$('#cap-list [data-release]').forEach((b) => (b.onclick = async () => {
+      await api('PUT', `/contacts/${b.dataset.release}`, { captainId: null });
+      await refresh();
+      viewCaptains();
+      toast('Taken out');
+    }));
+    $$('#cap-list [data-assign]').forEach((b) => (b.onclick = () => assignToCaptain(b.dataset.assign)));
+  };
+
+  $('#cap-q').oninput = (e) => { S.filter.captainQ = e.target.value; paint(); };
+  $('#cap-new').onclick = () => appointCaptain();
+  paint();
+}
+
+/** Promote one of the drivers already on the roster. */
+function appointCaptain() {
+  const options = S.data.contacts
+    .filter((c) => !c.isCaptain && (!c.status || c.status === 'active'))
+    .sort((a, b) => (b.fleetSize ?? 0) - (a.fleetSize ?? 0) || a.name.localeCompare(b.name));
+
+  if (!options.length) return toast('Every driver is already a captain', 'bad');
+
+  openDrawer(`
+    <div class="drawer-head">
+      <div><div class="drawer-title">Appoint a captain</div>
+        <div class="drawer-sub">One of your drivers, promoted</div></div>
+      <button class="drawer-x">×</button>
+    </div>
+    <div class="field-hint" style="margin-bottom:12px">
+      Fleet owners first — a man who already runs several autos usually already
+      has other drivers listening to him.
+    </div>
+    <div class="field"><label class="field-label">Which driver</label>
+      <select id="cap-who">
+        ${options.map((c) => `<option value="${c.id}">${esc(c.name)}${(c.fleetSize ?? 0) > 1 ? ` — ${c.fleetSize} autos` : ''}${c.areaId ? ` · ${esc(areaName(c.areaId))}` : ''}</option>`).join('')}
+      </select>
+    </div>
+    <div class="drawer-foot"><button class="btn btn-primary btn-block" id="cap-save">Make him a captain</button></div>`);
+
+  $('#cap-save').onclick = async () => {
+    const id = $('#cap-who').value;
+    await api('PUT', `/contacts/${id}`, { isCaptain: true });
+    await refresh();
+    closeDrawer();
+    toast('Captain appointed', 'good');
+    viewCaptains();
+  };
+}
+
+/** Tick as many drivers as you like and put them all under one captain. */
+function assignToCaptain(captainId) {
+  const cap = S.data.contacts.find((c) => c.id === captainId);
+  if (!cap) return;
+  const options = S.data.contacts
+    .filter((c) => c.id !== captainId && (!c.status || c.status === 'active'))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  openDrawer(`
+    <div class="drawer-head">
+      <div><div class="drawer-title">Under ${esc(cap.name)}</div>
+        <div class="drawer-sub">Tick everyone who answers to him</div></div>
+      <button class="drawer-x">×</button>
+    </div>
+    <div class="field"><input type="search" id="ca-q" placeholder="Search a driver…" autocomplete="off"></div>
+    <div class="field-hint" style="margin-bottom:8px">
+      A driver answers to one captain. Ticking a man who is already under
+      somebody else moves him here.
+    </div>
+    <div class="ca-list" id="ca-list"></div>
+    <div class="drawer-foot"><button class="btn btn-primary btn-block" id="ca-save">Save</button></div>`);
+
+  const paintList = () => {
+    const q = ($('#ca-q').value ?? '').trim().toLowerCase();
+    $('#ca-list').innerHTML = options
+      .filter((c) => !q || c.name.toLowerCase().includes(q) || (c.phone ?? '').includes(q))
+      .slice(0, 200)
+      .map((c) => {
+        const elsewhere = c.captainId && c.captainId !== captainId
+          ? S.data.contacts.find((x) => x.id === c.captainId)?.name
+          : '';
+        return `<label class="check ca-row">
+          <input type="checkbox" data-man="${c.id}" ${c.captainId === captainId ? 'checked' : ''}>
+          <span class="ca-name">${esc(c.name)}${c.isCaptain ? ' <span class="chip chip-amber">captain</span>' : ''}</span>
+          <span class="ca-meta">${(c.fleetSize ?? 0)} auto${(c.fleetSize ?? 0) === 1 ? '' : 's'}${
+            elsewhere ? ` · under ${esc(elsewhere)}` : ''}</span>
+        </label>`;
+      }).join('') || '<div class="dim" style="font-size:12px">Nobody matches that.</div>';
+  };
+  paintList();
+  $('#ca-q').oninput = paintList;
+
+  $('#ca-save').onclick = async () => {
+    // Only the boxes actually on screen are read, so a search does not silently
+    // release everybody it filtered out.
+    const shown = $$('#ca-list [data-man]');
+    const changes = [];
+    for (const box of shown) {
+      const c = S.data.contacts.find((x) => x.id === box.dataset.man);
+      const now = c.captainId === captainId;
+      if (box.checked && !now) changes.push([c.id, captainId]);
+      if (!box.checked && now) changes.push([c.id, null]);
+    }
+    if (!changes.length) { closeDrawer(); return; }
+    for (const [id, val] of changes) await api('PUT', `/contacts/${id}`, { captainId: val });
+    await refresh();
+    closeDrawer();
+    toast(`${changes.length} driver${changes.length === 1 ? '' : 's'} updated`, 'good');
+    viewCaptains();
+  };
+}
+
 // ---------------------------------------------------------------- vehicles
 
 /**
@@ -3305,6 +3499,22 @@ function openVehicle(id) {
           ${areas.map((a) => `<option value="${a.id}" ${a.id === v.areaId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
         </select>
       </div>
+      <div class="row">
+        <div class="field"><label class="field-label">RC number</label>
+          <input type="text" id="v-rc" value="${esc(v.rcNumber ?? '')}" placeholder="Registration certificate"></div>
+        <div class="field"><label class="field-label">Battery serial</label>
+          <input type="text" id="v-battery" value="${esc(v.batterySerial ?? '')}" placeholder="On the battery itself"></div>
+      </div>
+      <div class="field">
+        <label class="field-label">Condition</label>
+        <div class="rate" id="v-rate">
+          ${[1, 2, 3, 4, 5].map((n) => `<button type="button" class="rate-star" data-rate="${n}"
+              title="${['', 'Poor', 'Rough', 'Fair', 'Good', 'Like new'][n]}">★</button>`).join('')}
+          <button type="button" class="rate-clear" id="v-rate-clear">clear</button>
+          <span class="rate-label" id="v-rate-label"></span>
+        </div>
+        <div class="field-hint">What shape the auto is in. Dents, scratches and anything that identifies it go in the notes below.</div>
+      </div>
     </div>
 
     <div class="drawer-section">
@@ -3374,6 +3584,23 @@ function openVehicle(id) {
     wireDrivers();
   };
 
+  // ---- condition, 1 to 5. Zero means nobody has judged it yet, which is a
+  //      different thing from judging it poor.
+  const RATE_WORDS = ['Not rated', 'Poor', 'Rough', 'Fair', 'Good', 'Like new'];
+  let rating = Number(v.condition) || 0;
+  const paintRate = () => {
+    $$('#v-rate .rate-star').forEach((b) => b.classList.toggle('on', Number(b.dataset.rate) <= rating));
+    $('#v-rate-label').textContent = RATE_WORDS[rating] ?? '';
+    $('#v-rate-clear').style.display = rating ? '' : 'none';
+  };
+  $$('#v-rate .rate-star').forEach((b) => (b.onclick = () => {
+    // Clicking the star already set clears it, so a misclick is one click back.
+    rating = Number(b.dataset.rate) === rating ? 0 : Number(b.dataset.rate);
+    paintRate();
+  }));
+  $('#v-rate-clear').onclick = () => { rating = 0; paintRate(); };
+  paintRate();
+
   $('#v-save').onclick = async () => {
     await api('PUT', `/vehicles/${id}`, {
       number: $('#v-number').value.trim(),
@@ -3386,6 +3613,9 @@ function openVehicle(id) {
       finance: $('#v-finance').value.trim(),
       financeDetails: $('#v-findet').value.trim(),
       parking: $('#v-parking').value.trim(),
+      rcNumber: $('#v-rc').value.trim(),
+      batterySerial: $('#v-battery').value.trim(),
+      condition: rating,
       notes: $('#v-notes').value,
     });
     await refresh();
@@ -4227,8 +4457,7 @@ function openContact(id) {
         </select>
         ${c.areaRaw ? `<div class="field-hint">Spreadsheet said "${esc(c.areaRaw)}".</div>` : ''}
       </div>
-      <label class="check" style="margin:10px 0"><input type="checkbox" id="c-captain" ${c.isCaptain ? 'checked' : ''}> Captain (area lead)</label>
-      ${c.phone ? `<a class="btn btn-block" href="tel:${esc(c.phone)}">Call ${esc(c.phone)}</a>` : ''}
+      ${c.phone ? `<a class="btn btn-block" href="tel:${esc(c.phone)}" style="margin-top:10px">Call ${esc(c.phone)}</a>` : ''}
     </div>
 
     <div class="drawer-section">
@@ -4250,6 +4479,52 @@ function openContact(id) {
       <div id="c-zones">${zoneChips(areas)}</div>
       <div class="area-pick" id="c-work">${areaPickRows(areas, c.workAreaIds ?? [], c.bestAreaId ?? null)}</div>
       <div class="field-hint" style="margin-top:6px">Two or more areas draws the roads between them as covered too, so long as they're close enough to shuttle between.</div>
+    </div>
+
+    <div class="drawer-section">
+      <div class="drawer-section-title">Papers</div>
+      <div class="field-hint" style="margin-bottom:10px">
+        All optional. Drivers turn up with whatever they have, and a blank here
+        means "not collected", not "does not exist".
+      </div>
+      <div class="field"><label class="field-label">Driving licence</label>
+        <input type="text" id="c-license" value="${esc(c.license ?? '')}" placeholder="DL-0420110012345"></div>
+      <div class="row">
+        <div class="field"><label class="field-label">Badge number</label>
+          <input type="text" id="c-badge" value="${esc(c.badge ?? '')}" placeholder="PSV badge"></div>
+        <div class="field"><label class="field-label">PAN</label>
+          <input type="text" id="c-pan" value="${esc(c.pan ?? '')}" placeholder="ABCDE1234F"></div>
+      </div>
+      <div class="field"><label class="field-label">Aadhaar</label>
+        <input type="text" id="c-aadhar" value="${esc(c.aadhar ?? '')}" placeholder="12 digits"></div>
+      <div class="field"><label class="field-label">Address</label>
+        <textarea id="c-address" rows="2" placeholder="Where he lives">${esc(c.address ?? '')}</textarea></div>
+
+      <div class="field-label" style="margin-top:12px">Other documents</div>
+      <div class="field-hint" style="margin-bottom:6px">Anything else he carries — a permit, insurance, police verification.</div>
+      <div id="c-docs"></div>
+      <button class="btn btn-sm btn-block" id="c-add-doc" style="margin-top:6px">+ Add a document</button>
+    </div>
+
+    <div class="drawer-section">
+      <div class="drawer-section-title">Captain</div>
+      <label class="check" style="margin-bottom:10px">
+        <input type="checkbox" id="c-is-captain" ${c.isCaptain ? 'checked' : ''}>
+        He is a captain — other drivers answer to him
+      </label>
+      ${c.isCaptain ? `<div class="field-hint" style="margin-bottom:10px">
+        ${underCaptain(c.id).length} driver${underCaptain(c.id).length === 1 ? '' : 's'} under him.
+        Put more under him on the <strong>Captains</strong> screen.
+      </div>` : ''}
+      <div class="field"><label class="field-label">He answers to</label>
+        <select id="c-captain-of">
+          <option value="">— nobody —</option>
+          ${captainsOf().filter((x) => x.id !== c.id)
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((x) => `<option value="${x.id}" ${x.id === c.captainId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}
+        </select>
+        ${captainsOf().filter((x) => x.id !== c.id).length ? '' : '<div class="field-hint">No captains appointed yet.</div>'}
+      </div>
     </div>
 
     <div class="drawer-section">
@@ -4338,6 +4613,42 @@ function openContact(id) {
   $$('#drawer [data-open-v]').forEach((b) => (b.onclick = () => openVehicle(b.dataset.openV)));
   $('#c-add-veh').onclick = () => newVehicle(c.id);
 
+  // ---- other documents: a working copy, same as the vehicle's driver rows
+  let docs = (c.docs ?? []).map((d) => ({ ...d }));
+
+  const readDocs = () => $$('#c-docs .doc-row').map((row) => ({
+    id: row.dataset.docId || undefined,
+    name: row.querySelector('.doc-name').value.trim(),
+    notes: row.querySelector('.doc-notes').value,
+  }));
+
+  const paintDocs = () => {
+    $('#c-docs').innerHTML = docs.length ? docs.map((d, i) => `
+      <div class="doc-row" data-doc-id="${esc(d.id ?? '')}">
+        <div class="doc-top">
+          <input type="text" class="doc-name" value="${esc(d.name ?? '')}" placeholder="What it is — permit, insurance…">
+          <button class="btn btn-sm btn-danger doc-x" data-doc-remove="${i}" aria-label="Remove">×</button>
+        </div>
+        <textarea class="doc-notes" rows="2" placeholder="Number, expiry, anything worth remembering">${esc(d.notes ?? '')}</textarea>
+      </div>`).join('')
+      : '<div class="dim" style="font-size:12px">Nothing else recorded.</div>';
+
+    $$('#c-docs [data-doc-remove]').forEach((b) => (b.onclick = () => {
+      docs = readDocs();
+      docs.splice(Number(b.dataset.docRemove), 1);
+      paintDocs();
+    }));
+  };
+  paintDocs();
+
+  $('#c-add-doc').onclick = () => {
+    docs = readDocs();
+    docs.push({ name: '', notes: '' });
+    paintDocs();
+    // Straight into the new row's name box — it is the only field that matters.
+    $$('#c-docs .doc-name').slice(-1)[0]?.focus();
+  };
+
   $('#c-save').onclick = async () => {
     const work = readAreaPick($('#c-work'));
     await api('PUT', `/contacts/${id}`, {
@@ -4346,7 +4657,8 @@ function openContact(id) {
       phones: $('#c-alt').value.split(',').map((p) => p.trim()).filter(Boolean),
       fleetSize: Number($('#c-fleet').value),
       areaId: $('#c-area').value || null,
-      isCaptain: $('#c-captain').checked,
+      isCaptain: $('#c-is-captain').checked,
+      captainId: $('#c-captain-of').value || null,
       notes: $('#c-notes').value,
       tenure: $('#c-tenure').value,
       parking: $('#c-parking').value.trim(),
@@ -4354,6 +4666,12 @@ function openContact(id) {
       startAreaId: $('#c-start').value || null,
       workAreaIds: work.workAreaIds,
       bestAreaId: work.bestAreaId,
+      license: $('#c-license').value.trim(),
+      badge: $('#c-badge').value.trim(),
+      pan: $('#c-pan').value.trim().toUpperCase(),
+      aadhar: $('#c-aadhar').value.trim(),
+      address: $('#c-address').value.trim(),
+      docs: readDocs(),
     });
     await refresh();
     closeDrawer();

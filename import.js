@@ -400,10 +400,25 @@ function buildContacts(driverRows, captainRows, areas, existing, removed = []) {
       workAreaIds: prior.workAreaIds ?? [],
       bestAreaId: prior.bestAreaId ?? null,
       workUpdatedAt: prior.workUpdatedAt ?? null,
+      // Papers and the chain of command. None of this is in the spreadsheet and
+      // none of it ever will be — it comes from the driver handing over a
+      // licence, or from deciding who reports to whom. Dropping it here would
+      // wipe every document collected since the last import.
+      license: prior.license ?? '',
+      address: prior.address ?? '',
+      aadhar: prior.aadhar ?? '',
+      pan: prior.pan ?? '',
+      badge: prior.badge ?? '',
+      docs: prior.docs ?? [],
+      captainId: prior.captainId ?? null,
       overrides: ov,
       tenure: ov.tenure ? prior.tenure : fresh.tenure,
       reference: ov.reference ? prior.reference : fresh.reference,
       parking: ov.parking ? prior.parking : fresh.parking,
+      // Appointed or demoted in the app beats the sheet's Captains tab. Without
+      // this a captain appointed here is demoted on the next import while the
+      // men under him keep pointing at him.
+      isCaptain: ov.isCaptain ? prior.isCaptain : fresh.isCaptain,
       // Numbers are UNIONED rather than replaced. A phone is how a sheet row is
       // matched back to this contact, so dropping the sheet's own numbers would
       // orphan the record on the next import and split it into a duplicate.
@@ -480,6 +495,12 @@ function mergeVehicles(contacts, prior = [], removedPlates = []) {
         areaId: was?.areaId ?? null,
         status: was?.status ?? 'active',
         notes: was?.notes ?? '',
+        // Only ever known from the app — the sheet has no column for any of
+        // them, so they are carried across whether or not the record was
+        // otherwise edited.
+        rcNumber: was?.rcNumber ?? '',
+        batterySerial: was?.batterySerial ?? '',
+        condition: was?.condition ?? 0,
         edited: was?.edited ?? false,
         source: 'excel',
         excelRow: v.excelRow ?? null,
@@ -514,6 +535,16 @@ function main() {
 
   const { areas, unresolved, merged, added } = buildAreas(driverRows, captainRows, visitRows, prior.areas ?? []);
   const { contacts, updated, skipped } = buildContacts(driverRows, captainRows, areas, prior.contacts ?? [], removedPhones);
+
+  // A driver may point at a captain who has since been demoted in the sheet, or
+  // whose row is gone. Release him rather than leave a link to somebody who is
+  // not a captain — that state is invisible on screen, since he shows up in
+  // nobody's list and not in the unassigned count either.
+  const capIds = new Set(contacts.filter((c) => c.isCaptain).map((c) => c.id));
+  let released = 0;
+  for (const c of contacts) {
+    if (c.captainId && !capIds.has(c.captainId)) { c.captainId = null; released++; }
+  }
 
   // Autos come out of the contacts and become their own records. Anything the
   // app already knew about an auto is merged back in rather than overwritten.
@@ -567,7 +598,8 @@ function main() {
   console.log(`\n  Imported ${path.basename(src)}\n`);
   console.log(`    ${driverRows.length} sheet rows  ->  ${contacts.length} contacts  ->  ${autos} autos`);
   console.log(`    ${areas.length} areas (${areas.filter((a) => a.onVisitList).length} on the visit list, ${areas.length - withDrivers.size} with no drivers yet)`);
-  console.log(`    ${contacts.filter((c) => c.isCaptain).length} captains`);
+  console.log(`    ${contacts.filter((c) => c.isCaptain).length} captains, ${contacts.filter((c) => c.captainId).length} drivers under one`);
+  if (released) console.log(`    ${released} driver(s) released — their captain is no longer one`);
   if (updated) console.log(`    ${updated} existing contacts refreshed (your notes and visit logs kept)`);
   // Say it out loud. A row silently vanishing from the sheet's count is exactly
   // what would send someone hunting for a parsing bug that isn't there.

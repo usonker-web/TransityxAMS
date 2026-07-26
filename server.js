@@ -942,14 +942,50 @@ async function api(req, res, url) {
       const body = await readBody(req);
       const c = db.contacts.find((x) => x.id === id);
       if (!c) return send(res, 404, { error: 'Contact not found.' });
-      const allowed = ['name', 'phone', 'areaId', 'tenure', 'reference', 'isCaptain', 'fleetSize', 'notes', 'status', 'parking'];
+      const allowed = [
+        'name', 'phone', 'areaId', 'tenure', 'reference', 'isCaptain', 'fleetSize', 'notes', 'status', 'parking',
+        // Papers. Every one optional — drivers turn up with whatever they have,
+        // and a form that insists on all five would just be filled with dashes.
+        'license', 'address', 'aadhar', 'pan', 'badge',
+      ];
       for (const k of allowed) if (k in body) c[k] = body[k];
+
+      // Anything else he carries: a permit, an insurance paper, a police
+      // verification. Name it and write what matters in the note.
+      if ('docs' in body) {
+        c.docs = (Array.isArray(body.docs) ? body.docs : [])
+          .map((d) => ({
+            id: d.id || `doc_${uid()}`,
+            name: String(d.name ?? '').trim(),
+            notes: String(d.notes ?? ''),
+          }))
+          .filter((d) => d.name || d.notes);
+      }
+
+      // Who he answers to. Must be a real captain, and not himself — a man
+      // reporting to himself would show up inside his own list on the Captains
+      // screen and never come out of it.
+      if ('captainId' in body) {
+        const cap = db.contacts.find((x) => x.id === body.captainId);
+        c.captainId = cap && cap.id !== c.id && cap.isCaptain ? cap.id : null;
+      }
+
+      // Demoting a captain releases everyone under him. Leaving them pointing at
+      // a man who is no longer a captain is how a driver disappears from the
+      // screen entirely: not in anyone's list, and not in the unassigned one.
+      if ('isCaptain' in body && !c.isCaptain) {
+        for (const other of db.contacts) if (other.captainId === c.id) other.captainId = null;
+      }
 
       // These three are spreadsheet columns, so by default a re-import would
       // overwrite them and quietly undo the correction. Marking them as edited
       // here is what makes the importer keep his version instead — same idea as
       // areaIdOverride, which already exists for the area column.
-      for (const k of ['tenure', 'reference', 'parking']) {
+      // isCaptain is in here because the sheet has a Captains tab of its own.
+      // Appointing somebody in the app has to outrank that, or the next
+      // Re-import Excel demotes him and leaves his men pointing at a man who is
+      // no longer a captain.
+      for (const k of ['tenure', 'reference', 'parking', 'isCaptain']) {
         if (k in body) c.overrides = { ...(c.overrides ?? {}), [k]: true };
       }
       if ('phones' in body) c.overrides = { ...(c.overrides ?? {}), phones: true };
@@ -1028,6 +1064,9 @@ async function api(req, res, url) {
           v.drivers = v.drivers.filter((d) => d.contactId !== gone.id);
         }
       }
+      // If he was a captain, the men under him are released rather than left
+      // pointing at somebody who is no longer in the list.
+      for (const other of db.contacts) if (other.captainId === gone.id) other.captainId = null;
 
       saveData(db);
       return send(res, 200, { ok: true, name: gone.name, vehicles: his.length });
@@ -1097,6 +1136,9 @@ async function api(req, res, url) {
         finance: body.finance ?? '',
         financeDetails: body.financeDetails ?? '',
         parking: body.parking ?? '',
+        rcNumber: body.rcNumber ?? '',
+        batterySerial: body.batterySerial ?? '',
+        condition: 0,
         areaId: body.areaId && db.areas.some((a) => a.id === body.areaId) ? body.areaId : null,
         status: body.status === 'idle' ? 'idle' : 'active',
         notes: body.notes ?? '',
@@ -1131,7 +1173,13 @@ async function api(req, res, url) {
         v.areaId = body.areaId && db.areas.some((a) => a.id === body.areaId) ? body.areaId : null;
       }
       if ('status' in body) v.status = body.status === 'idle' ? 'idle' : 'active';
-      for (const k of ['passingDate', 'finance', 'financeDetails', 'parking', 'notes']) {
+      // 1 to 5, or 0 for "not rated". Clamped rather than rejected: a rating is
+      // a judgement, and the worst thing it can do is refuse to be written down.
+      if ('condition' in body) {
+        const n = Math.round(Number(body.condition) || 0);
+        v.condition = n >= 1 && n <= 5 ? n : 0;
+      }
+      for (const k of ['passingDate', 'finance', 'financeDetails', 'parking', 'notes', 'rcNumber', 'batterySerial']) {
         if (k in body) v[k] = body[k] ?? '';
       }
       // Anything corrected by hand has to survive the next Re-import Excel, the
