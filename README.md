@@ -610,6 +610,14 @@ roster with tick boxes; tick as many as you like and they all move at once. A
 driver answers to one captain, so ticking a man who is already under somebody
 else moves him rather than duplicating him.
 
+The search box takes a captain's name, a driver's name, **or an auto number** —
+so a plate seen on the road leads straight to the man driving it and the captain
+he answers to. It searches the autos a man *drives* as well as the ones he owns,
+because those are regularly different people, and it matches however the plate is
+typed: `DL 1RQ 3576`, `dl1rq3576` or just the last four digits. Whichever man the
+plate belongs to is marked, with the plate shown next to his name, so it is never
+a mystery why a card is in the results.
+
 The links are kept honest in both directions. Demoting a captain releases
 everyone under him, and so does deleting him — a driver left pointing at a man
 who is no longer a captain would appear in nobody's list and not in the

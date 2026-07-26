@@ -3091,6 +3091,21 @@ function viewDrivers() {
 const captainsOf = () => S.data.contacts.filter((c) => c.isCaptain && (!c.status || c.status === 'active'));
 const underCaptain = (id) => S.data.contacts.filter((c) => c.captainId === id);
 
+/**
+ * Every plate connected to one man — the autos he owns and the autos he drives.
+ * Both, because a plate seen on the road belongs to somebody who drives it, and
+ * that is often not the man who owns it. Searching only what he owns would miss
+ * exactly the case the search exists for.
+ */
+function contactPlates(id) {
+  const out = new Set();
+  for (const v of S.data.vehicles ?? []) {
+    if (!v.number) continue;
+    if (v.ownerId === id || (v.drivers ?? []).some((d) => d.contactId === id)) out.add(v.number);
+  }
+  return [...out];
+}
+
 function viewCaptains() {
   const caps = captainsOf().slice().sort((a, b) => underCaptain(b.id).length - underCaptain(a.id).length
     || a.name.localeCompare(b.name));
@@ -3116,7 +3131,7 @@ function viewCaptains() {
     </div>`}
 
     <div class="search-bar">
-      <input type="search" id="cap-q" placeholder="Captain or driver name…" value="${esc(S.filter.captainQ)}">
+      <input type="search" id="cap-q" placeholder="Captain, driver, or auto number…" value="${esc(S.filter.captainQ)}">
       <div class="sp"></div>
       <span class="dim" id="cap-count"></span>
     </div>
@@ -3125,10 +3140,18 @@ function viewCaptains() {
 
   const paint = () => {
     const q = S.filter.captainQ.trim().toLowerCase();
+    // A plate is typed the way it is painted on the auto — with spaces, in any
+    // case. Stripped down to letters and digits, "DL 1RW 0740" and "dl1rw0740"
+    // are the same search.
+    const plateQ = q.replace(/[^a-z0-9]/g, '');
+    const platesHit = (id) => (plateQ
+      ? contactPlates(id).filter((p) => p.toLowerCase().includes(plateQ))
+      : []);
+    const hits = (c) => c.name.toLowerCase().includes(q) || platesHit(c.id).length > 0;
+
     const rows = caps
       .map((cap) => ({ cap, men: underCaptain(cap.id).sort((a, b) => a.name.localeCompare(b.name)) }))
-      .filter(({ cap, men }) => !q || cap.name.toLowerCase().includes(q)
-        || men.some((m) => m.name.toLowerCase().includes(q)));
+      .filter(({ cap, men }) => !q || hits(cap) || men.some(hits));
 
     $('#cap-count').textContent = `${rows.length} shown · ${rows.reduce((n, r) => n + r.men.length, 0)} drivers under them`;
     $('#cap-list').innerHTML = rows.length ? rows.map(({ cap, men }) => `
@@ -3137,7 +3160,8 @@ function viewCaptains() {
           <div>
             <button class="cap-name" data-open-c="${cap.id}">${esc(cap.name)}</button>
             <span class="chip chip-amber">captain</span>
-            <div class="cap-sub">${esc(areaName(cap.areaId))}${cap.phone ? ` · <a class="tel" href="tel:${esc(cap.phone)}">${esc(cap.phone)}</a>` : ''}</div>
+            <div class="cap-sub">${esc(areaName(cap.areaId))}${cap.phone ? ` · <a class="tel" href="tel:${esc(cap.phone)}">${esc(cap.phone)}</a>` : ''}${
+              platesHit(cap.id).length ? ` · <span class="cap-man-plate">${platesHit(cap.id).map(esc).join(' · ')}</span>` : ''}</div>
           </div>
           <div style="text-align:right">
             <div class="cap-count">${men.length}</div>
@@ -3145,12 +3169,18 @@ function viewCaptains() {
           </div>
         </div>
         <div class="cap-men">
-          ${men.length ? men.map((m) => `
-            <span class="cap-man">
+          ${men.length ? men.map((m) => {
+            const hit = platesHit(m.id);
+            return `<span class="cap-man ${hit.length ? 'match' : ''}">
               <button data-open-c="${m.id}">${esc(m.name)}</button>
-              <span class="cap-man-n">${m.fleetSize ?? 0} auto${(m.fleetSize ?? 0) === 1 ? '' : 's'}</span>
+              ${hit.length
+                // Say which auto put him in the results, rather than leaving the
+                // reason for the match invisible.
+                ? `<span class="cap-man-plate">${hit.map(esc).join(' · ')}</span>`
+                : `<span class="cap-man-n">${m.fleetSize ?? 0} auto${(m.fleetSize ?? 0) === 1 ? '' : 's'}</span>`}
               <button class="cap-man-x" data-release="${m.id}" title="Take him out from under ${esc(cap.name)}">×</button>
-            </span>`).join('')
+            </span>`;
+          }).join('')
             : '<span class="dim" style="font-size:12.5px">Nobody under him yet.</span>'}
         </div>
         <button class="btn btn-sm" data-assign="${cap.id}" style="margin-top:10px">+ Put drivers under him</button>

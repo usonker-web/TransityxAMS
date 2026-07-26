@@ -824,6 +824,13 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 }
 .cap-man > button:first-child:hover { color: var(--teal-hi); }
 .cap-man-n { font: 500 11px var(--mono); color: var(--dim); }
+/* The auto that put this man in the results. */
+.cap-man.match { border-color: var(--teal-hi); }
+.cap-man-plate {
+  font: 600 10.5px var(--mono); letter-spacing: .3px;
+  color: var(--teal-hi); background: #0097b21f;
+  padding: 1px 5px; border-radius: 3px;
+}
 .cap-man-x {
   border: 0; background: none; color: var(--dim); cursor: pointer;
   font-size: 14px; line-height: 1; padding: 0 4px;
