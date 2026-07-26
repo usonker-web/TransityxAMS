@@ -249,11 +249,24 @@ some order — he never said what order he drives them in, and picking one would
 draw a specific road he may never take. Joining all the pairs claims only what he
 did say: *these places are my patch.*
 
-**Each colour is one auto.** Two patches crossing the same ground read as two
-things rather than one tangle. There are more drivers than colours, so they
-repeat — the colour is there to separate neighbours at a glance, and hovering is
-what names the auto. It is stable: the pink one stays the pink one, today and
-next month.
+**Each colour is one auto, and no two are ever the same.** Colours are generated
+rather than picked from a list, so there is no number of autos at which they
+start repeating — map another driver's areas and he gets a colour nobody else
+has.
+
+They are placed at the golden angle from each other, which is the arrangement
+that spreads any number of them as evenly as that number allows: two autos come
+out opposite each other on the colour wheel, ten a sixth of the wheel apart.
+They avoid the green that means *starts here* and the amber that means *you
+picked this*, so a route never wears a colour that means something else.
+
+The order is by when each auto was mapped, so a new one is added to the end
+rather than inserted in the middle — which is what keeps the colours stable.
+Mark another driver's areas tomorrow and everybody already on the map keeps the
+colour they had.
+
+Past roughly twenty autos on screen the eye stops separating them however well
+they are spread. That is what hovering and the auto search are for.
 
 **Hover any line** and that auto's whole patch lifts out of the crowd — all of
 its segments, not just the one under the cursor, because an auto is a patch and

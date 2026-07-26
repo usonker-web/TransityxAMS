@@ -2057,26 +2057,47 @@ function hunterRoutes() {
  * there to separate neighbours at a glance; hovering is what names the auto.
  */
 /**
- * Ten hues, each at least twenty degrees from its neighbours. The first version
- * of this list had five different blues in twelve entries, which meant two autos
- * regularly looked identical even when they had been given different colours —
- * the point of colouring them at all was lost.
+ * Colours are GENERATED, not chosen from a list, so there is no number of autos
+ * at which two of them have to share one. A fixed palette of ten meant the
+ * eleventh auto repeated; this has no such ceiling.
  *
- * Kept clear of the two colours that already mean something on this screen:
- * green for where a driver starts, amber for an area you picked.
+ * The hue wheel is used with two stretches cut out of it, because those two
+ * already mean something else on this screen and a route wearing them would
+ * lie: around 38° is the amber of an area you picked, around 160° the green of
+ * where a driver starts his day.
  */
-const HUNTER_COLORS = [
-  '#22d3ee', // cyan
-  '#3b82f6', // blue
-  '#818cf8', // indigo
-  '#a855f7', // purple
-  '#e879f9', // fuchsia
-  '#f472b6', // pink
-  '#fb7185', // rose
-  '#fb923c', // orange
-  '#a3e635', // lime
-  '#94a3b8', // slate
-];
+const HUE_RANGES = [[0, 26], [54, 138], [180, 360]];
+const HUE_SPAN = HUE_RANGES.reduce((n, [lo, hi]) => n + (hi - lo), 0);
+
+/** A position from 0 to 1 placed into the usable stretches of the wheel. */
+function hueAt(t) {
+  let x = ((t % 1) + 1) % 1 * HUE_SPAN;
+  for (const [lo, hi] of HUE_RANGES) {
+    if (x < hi - lo) return lo + x;
+    x -= hi - lo;
+  }
+  return HUE_RANGES[HUE_RANGES.length - 1][1] - 1;
+}
+
+/**
+ * Both map engines want a hex string — Google's strokeColor in particular is
+ * unreliable with anything else — so the generated colour is converted here
+ * rather than handed over as hsl().
+ */
+function hslHex(h, s, l) {
+  const a = (s / 100) * Math.min(l / 100, 1 - l / 100);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const v = l / 100 - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * v).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+// Three brightnesses. Two autos that land close on the wheel are still told
+// apart by one being pale and the other deep, which buys separation that hue
+// alone runs out of once there are a lot of them.
+const HUNTER_TIERS = [[85, 65], [70, 78], [95, 52]];
 /**
  * BOUNDARIES — Delhi's administrative areas, as their real shapes.
  *
@@ -2196,37 +2217,46 @@ const HUNTER_PICK = '#f59e0b';  // an area you asked about
 const HUNTER_THRU = '#00c2e0';  // he passes through, but does not start here
 
 /**
- * Give every auto on screen its own colour.
+ * Give every auto its own colour, however many there are — and make the ones on
+ * screen as far apart as the wheel allows.
  *
- * A hash alone is not enough. It is stable, which is what we want — the same
- * auto keeps its colour between repaints and between visits — but with three
- * drivers and ten colours two of them will collide often enough to matter, and
- * on the live roster they did: two of the three marked drivers were handed the
- * identical blue. So the hash picks a preferred colour and a collision walks to
- * the next free one, which keeps it stable while guaranteeing that no two autos
- * share a colour until there are more autos than colours.
+ * Hashing each id independently was tried first and was wrong. It gave unique
+ * colours and stable ones, but nothing pushed them apart: with three drivers the
+ * closest two came out six degrees apart, which is unique on paper and identical
+ * to look at. Distinctness is the whole point here, so it wins.
+ *
+ * So autos are placed at the golden angle from each other instead: the first
+ * anywhere, the next 137.5° round the wheel, the next 137.5° on again. That is
+ * the angle that never lets a turn line up with an earlier one, so any number of
+ * autos ends up about as evenly spread as that number can be — two land opposite
+ * each other, ten a sixth of the wheel apart, and it keeps working past that.
+ *
+ * ORDERED BY WHEN THE AUTO WAS MAPPED, oldest first, so a new one is appended
+ * rather than inserted. That is what keeps the colours stable: mark another
+ * driver's areas tomorrow and he takes the next unused colour while everybody
+ * already on the map keeps the one they had.
+ *
+ * Being honest about the limit: past roughly twenty on screen the eye stops
+ * separating them whatever the arithmetic says, which is what hovering and the
+ * spotlight are for.
  */
+const GOLDEN_ANGLE = 137.508;
+
 function assignRouteColors(routes) {
-  const used = new Set();
-  // Sorted, so the assignment depends on who is on the roster and not on the
-  // order they happened to arrive in.
-  for (const r of [...routes].sort((a, b) => a.contact.id.localeCompare(b.contact.id))) {
-    let h = 0;
-    const id = r.contact.id;
-    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-    // Once every colour is spoken for, begin a fresh round rather than pushing
-    // everybody onto whichever slot happens to be free.
-    if (used.size >= HUNTER_COLORS.length) used.clear();
-    let slot = h % HUNTER_COLORS.length;
-    // Step THREE colours on a clash, not one. The palette runs round the colour
-    // wheel, so the next slot along is the nearest hue there is — resolving a
-    // collision into it produces two autos that are technically different
-    // colours and look the same anyway. Three is coprime with ten, so this
-    // still reaches every slot before repeating.
-    while (used.has(slot)) slot = (slot + 3) % HUNTER_COLORS.length;
-    used.add(slot);
-    r.color = HUNTER_COLORS[slot];
-  }
+  const when = (r) => r.contact.workUpdatedAt || r.contact.createdAt || '';
+  const ordered = [...routes].sort((a, b) => {
+    const d = when(a).localeCompare(when(b));
+    // Contacts off the spreadsheet carry no timestamp at all, so the id is the
+    // tiebreak — arbitrary, but the same arbitrary order every time.
+    return d || a.contact.id.localeCompare(b.contact.id);
+  });
+
+  ordered.forEach((r, i) => {
+    // Step the brightness too. Two autos a full turn apart share a hue; being
+    // one pale and the other deep keeps them apart anyway.
+    const [sat, light] = HUNTER_TIERS[i % HUNTER_TIERS.length];
+    r.color = hslHex(hueAt((i * GOLDEN_ANGLE) / 360), sat, light);
+  });
 }
 
 function viewHunter() {

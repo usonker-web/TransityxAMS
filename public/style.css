@@ -445,6 +445,19 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
   border-left: 1px solid var(--line); background: var(--bg-2);
   overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px;
 }
+/**
+ * Nothing in this panel may shrink.
+ *
+ * A flex column squashes its children before it agrees to scroll, and these
+ * children have no height of their own to defend — so on a shorter screen, or
+ * once a long list of drivers appeared underneath them, the mode buttons were
+ * compressed to nothing and vanished. They came back whenever the panel emptied,
+ * which made it look like they only existed sometimes.
+ *
+ * flex: none keeps every row at its natural height and lets the panel scroll,
+ * which is what overflow-y was asking for in the first place.
+ */
+.map-side > * { flex: none; }
 .map-legend { display: flex; flex-direction: column; gap: 7px; }
 .legend-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
 .legend-swatch { width: 12px; height: 12px; border-radius: 50%; flex: none; }
