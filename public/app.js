@@ -103,7 +103,12 @@ function setTheme(name) {
 
 // ================================================================ api
 
-async function api(method, path, body) {
+/**
+ * @param opts.quiet  don't toast the failure — for the callers that answer a
+ *                    refusal on the screen itself, where it can be acted on,
+ *                    rather than in a message that fades after three seconds.
+ */
+async function api(method, path, body, opts = {}) {
   setSave('saving');
   try {
     const res = await fetch(`/api${path}`, {
@@ -119,7 +124,15 @@ async function api(method, path, body) {
       location.href = '/login';
       throw new Error('Signed out.');
     }
-    if (!res.ok) throw new Error(json.error ?? `${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      const err = new Error(json.error ?? `${res.status} ${res.statusText}`);
+      // A refusal often carries more than a sentence — which area it clashed
+      // with, whether forcing it is allowed. Losing that on the way up would
+      // leave the screen unable to offer the way out.
+      err.status = res.status;
+      err.body = json;
+      throw err;
+    }
     setSave('saved');
     return json;
   } catch (err) {
@@ -132,7 +145,7 @@ async function api(method, path, body) {
       showServerDown();
       throw new Error('The planner is not running.');
     }
-    toast(err.message, 'bad');
+    if (!opts.quiet) toast(err.message, 'bad');
     throw err;
   }
 }
@@ -2931,7 +2944,10 @@ function viewAreas() {
         <div class="page-title">Areas</div>
         <div class="page-sub">${s.areas} areas · ${s.untapped} with no drivers yet · ${s.onVisitList} on Rama sir's visit list · ${s.demandAreas} researched for auto demand</div>
       </div>
-      <div class="page-actions"><button class="btn" id="a-why">Why these areas?</button></div>
+      <div class="page-actions">
+        <button class="btn" id="a-why">Why these areas?</button>
+        <button class="btn btn-primary" id="a-new">+ Add an area</button>
+      </div>
     </div>
 
     ${s.demandGaps ? `<div class="note warn" style="margin-bottom:14px">
@@ -3008,6 +3024,7 @@ function viewAreas() {
   $('#a-zone').onchange = (e) => { S.filter.areaZone = e.target.value; paint(); };
   $('#a-demand').onchange = (e) => { S.filter.areaDemand = e.target.value; paint(); };
   $('#a-why').onclick = showDemandFacts;
+  $('#a-new').onclick = newArea;
   $('#a-add-top').onclick = () => {
     S.data.areaStats.slice().sort((a, b) => b.priority - a.priority).slice(0, 5).forEach((a) => S.pick.add(a.id));
     toast('Top 5 priority areas added', 'good');
@@ -4347,6 +4364,11 @@ function openArea(id) {
         <dt>Captains</dt><dd>${a.captains}</dd>
         <dt>Coordinates</dt><dd class="mono">${a.lat.toFixed(4)}, ${a.lng.toFixed(4)} <span class="dim">(${a.coordsSource})</span></dd>
       </dl>
+      ${a.source === 'app' ? `<div class="field-hint" style="margin-top:8px">
+        Added here from the map search${a.addedAt ? ` on ${a.addedAt.slice(0, 10)}` : ''}, because a driver named a place the
+        list did not have.${a.address ? ` The map called it "<strong>${esc(a.address)}</strong>".` : ''}
+        It survives <em>Re-import Excel</em> like every other area.
+      </div>` : ''}
     </div>
 
     ${(() => {
@@ -4395,6 +4417,7 @@ function openArea(id) {
     <div class="drawer-foot">
       <button class="btn btn-primary" id="area-add">Add to plan</button>
       <button class="btn" id="area-save">Save notes</button>
+      ${a.source === 'app' ? '<div class="sp"></div><button class="btn btn-danger btn-sm" id="area-del">Remove</button>' : ''}
     </div>`);
 
   $$('[data-mo]').forEach((el) => (el.onclick = () => { closeDrawer(); openModel(el.dataset.mo); }));
@@ -4406,7 +4429,49 @@ function openArea(id) {
     toast('Notes saved', 'good');
     go(S.view);
   };
+  // Only ever offered on an area added from the map search — a wrong search
+  // result should be removable, while the built-in and researched ones are
+  // rebuilt by the importer and would come back anyway.
+  if ($('#area-del')) {
+    $('#area-del').onclick = async () => {
+      if (!confirm(`Remove ${a.name} from the list of areas?`)) return;
+      await api('DELETE', `/areas/${id}`);
+      await refresh();
+      closeDrawer();
+      toast(`${a.name} removed`);
+      go(S.view);
+    };
+  }
   $$('[data-c]').forEach((el) => (el.onclick = (e) => { e.preventDefault(); openContact(el.dataset.c); }));
+}
+
+/**
+ * Add an area on its own, away from any driver — for when a place comes up in
+ * conversation rather than while somebody's record is open.
+ */
+function newArea() {
+  openDrawer(`
+    <div class="drawer-head">
+      <div>
+        <div class="drawer-title">Add an area</div>
+        <div class="drawer-sub">A place the list doesn't have yet</div>
+      </div>
+      <button class="drawer-x">×</button>
+    </div>
+    <div class="note" style="margin-bottom:14px">
+      The list came from the spreadsheet and the demand research, so it is always
+      going to be short of the words drivers actually use. Search the map for the
+      place, name it the way they say it, and it joins every screen that has
+      areas on it — the coverage map, Auto Hunter, the day planner.
+    </div>
+    ${areaFinderHtml('na-find', { placeholder: 'Market, depot, metro station, colony…' })}`);
+
+  // The finder has already re-fetched the data by the time this runs; repainting
+  // is what puts the new pin on the screen behind the drawer, so it can be seen
+  // sitting in the right part of Delhi before the drawer is even closed.
+  wireAreaFinder($('#na-find'), {
+    onAdded: () => { if (['areas', 'map', 'coverage', 'hunter'].includes(S.view)) go(S.view); },
+  });
 }
 
 // ---- contact
@@ -4470,6 +4535,54 @@ function areaPickRows(areas, selectedIds, bestId) {
     </div>`).join('');
 }
 
+/**
+ * The same picker, for a question with one answer — *where does he start his
+ * day?* — instead of many.
+ *
+ * It was a dropdown, which is the wrong shape for 69 areas: no way to search it,
+ * and no way at all to answer with a place the list has never heard of. Same
+ * rows, same filter, same map search underneath; a radio rather than a tick,
+ * because a man starts his day in one place.
+ */
+function areaOneRows(areas, selectedId, group, blankLabel) {
+  const sel = selectedId ?? '';
+  const row = (id, name, zone, dim) => `
+    <div class="apick ${id === sel ? 'on' : ''}" data-apick-row="${id}" data-apick-name="${esc(name.toLowerCase())}">
+      <label class="apick-hit">
+        <input type="radio" name="${group}" data-aone="${id}" ${id === sel ? 'checked' : ''}>
+        <span class="apick-name${dim ? ' dim' : ''}">${esc(name)}</span>
+        <span class="apick-zone">${esc(zone ?? '')}</span>
+      </label>
+    </div>`;
+  // The blank stays a row rather than a "clear" button: not having asked him is
+  // a real answer here, and the honest one until somebody has. Passing no label
+  // leaves it out, which is how one row gets built on its own later.
+  return (blankLabel ? row('', blankLabel, '', true) : '')
+    + areas.map((a) => row(a.id, a.name, a.zone, false)).join('');
+}
+
+function wireAreaOne(root) {
+  $$('[data-aone]', root).forEach((rb) => {
+    rb.onchange = () => {
+      $$('.apick', root).forEach((r) => r.classList.toggle('on', r.contains(rb)));
+    };
+  });
+  // Open on his answer rather than at the top of the alphabet — otherwise the
+  // one thing the field is there to tell you is the one thing off screen.
+  //
+  // Measured off the rectangles rather than offsetTop, which is relative to the
+  // nearest POSITIONED ancestor — not this list — and so scrolled it to a spot
+  // that had nothing to do with his answer.
+  const on = $('.apick.on', root);
+  if (!on) return;
+  const top = on.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
+  if (top > root.clientHeight - 40) root.scrollTop = top - 46;
+}
+
+function readAreaOne(root) {
+  return $('[data-aone]:checked', root)?.dataset.aone || null;
+}
+
 /** Wire the zone shortcut buttons that sit above a picker. */
 function wireZoneChips(chipRoot, pickRoot, areas) {
   $$('[data-zone-add]', chipRoot).forEach((btn) => {
@@ -4525,16 +4638,386 @@ function readAreaPick(root) {
   };
 }
 
-/** Live filter for a long area list — 68 rows is too many to scroll blind. */
-function wireAreaPickFilter(inputSel, root) {
+/**
+ * Live filter for a long area list — 68 rows is too many to scroll blind.
+ *
+ * When nothing matches, the box becomes the way OUT of the list rather than a
+ * dead end: the same words are offered to the map search below it. "It isn't in
+ * here" is exactly the moment somebody needs to add it, and that is the moment
+ * the driver is still standing there to be asked which one he meant.
+ */
+function wireAreaPickFilter(inputSel, root, finder = null) {
   const input = $(inputSel);
   if (!input) return;
   input.oninput = () => {
     const q = input.value.trim().toLowerCase();
+    let shown = 0;
     $$('.apick', root).forEach((row) => {
-      row.style.display = !q || row.dataset.apickName.includes(q) ? '' : 'none';
+      const hit = !q || row.dataset.apickName.includes(q);
+      row.style.display = hit ? '' : 'none';
+      if (hit) shown++;
     });
+    // A list that hides its last row collapses to a hairline, which reads as the
+    // control having broken rather than as an answer. Say the answer instead.
+    let empty = $('.apick-empty', root);
+    if (!empty) {
+      root.insertAdjacentHTML('beforeend', '<div class="apick-empty" hidden></div>');
+      empty = $('.apick-empty', root);
+    }
+    empty.hidden = shown > 0;
+    empty.textContent = `Nothing in the list is called "${input.value.trim()}".`;
+    if (finder) setFinderPrompt(finder, shown === 0 && q.length >= 2 ? input.value.trim() : '');
   };
+}
+
+// ---------------------------------------------------------------- new areas
+//
+// Drivers name places the list has never heard of — a market gate, a depot, a
+// colony's own name for its main road. The list was built from the spreadsheet
+// and from demand research, so it was always going to be short of the words the
+// men on the road actually use.
+//
+// Rather than make somebody edit areas.js and re-import, this asks the same map
+// the app already draws on: Google's geocoder when a key is set in Settings,
+// OpenStreetMap's when it is not. The point comes back real, so the new area
+// lands on the map where the driver actually goes instead of at a guess — and
+// once it is in the list it behaves like every other area: it draws, it counts
+// autos, it can be hunted, it can be planned into a trip.
+
+/**
+ * Delhi, roughly. Searches are held inside this box because a driver saying
+ * "Nangloi" means the one he drives to, and a namesake in another state would
+ * drag the whole coverage map off the city.
+ */
+const DELHI_BOX = { south: 28.30, west: 76.75, north: 28.95, east: 77.45 };
+
+const titleCase = (s) => s.trim().toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
+
+/**
+ * A map service answers with a full postal address; the list wants what the
+ * driver would say. The leading part is the name in nearly every case — unless
+ * it starts with a house number, which is an address and not a place, so his
+ * own words are kept instead.
+ */
+function shortPlaceName(address, query) {
+  const first = String(address ?? '').split(',')[0].trim();
+  return !first || /^\d/.test(first) ? titleCase(query) : first;
+}
+
+/** Nearest area already in the list, with the distance in km. */
+function nearestArea(lat, lng) {
+  let best = null;
+  for (const a of S.data.areaStats) {
+    if (!a.lat || !a.lng) continue;
+    const dLat = ((a.lat - lat) * Math.PI) / 180;
+    const dLng = ((a.lng - lng) * Math.PI) / 180;
+    const h = Math.sin(dLat / 2) ** 2
+      + Math.cos((lat * Math.PI) / 180) * Math.cos((a.lat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+    const km = 2 * 6371 * Math.asin(Math.sqrt(h));
+    if (!best || km < best.km) best = { ...a, km };
+  }
+  return best;
+}
+
+/**
+ * Find a place by name. Google first when a key is set, because that is the map
+ * this office already pays for and the one whose names match what people search
+ * on their phones. OpenStreetMap when there is no key, or when Google refuses —
+ * it indexes small markets and depots that a postal geocoder misses, so the two
+ * together answer more than either alone.
+ *
+ * Returns { hits, note }. The note is how a silent fall back to the free map
+ * gets said out loud: a key that draws the map but cannot geocode is the exact
+ * failure Settings warns about, and a search quietly answered by a different
+ * service is worth one line rather than a mystery.
+ */
+async function findPlaces(q) {
+  const query = q.trim();
+  if (query.length < 3) return { hits: [], note: '' };
+  const key = S.data.settings.mapsApiKey?.trim();
+  let note = '';
+
+  if (key) {
+    try {
+      await GoogleImpl.load(key);
+      const { results } = await new google.maps.Geocoder().geocode({
+        address: query,
+        region: 'IN',
+        componentRestrictions: { country: 'IN' },
+        bounds: DELHI_BOX,
+      });
+      const hits = dedupePlaces(results.slice(0, 6).map((r) => ({
+        name: shortPlaceName(r.formatted_address, query),
+        address: r.formatted_address,
+        lat: r.geometry.location.lat(),
+        lng: r.geometry.location.lng(),
+        source: 'google',
+      })));
+      if (hits.length) return { hits, note: '' };
+    } catch (err) {
+      // Google throws for "found nothing" and for "Geocoding is switched off on
+      // this key" alike. Neither is a reason to stop — the free map is right
+      // here — but the second one is worth naming, because it is fixable and
+      // otherwise looks like the key is fine.
+      note = /billing|denied|REQUEST_DENIED|not authorized/i.test(err.message ?? '')
+        ? 'Google refused the address lookup on your key — Settings → Check the key says why. Answered by the free map instead.'
+        : '';
+    }
+  }
+
+  const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&countrycodes=in&bounded=1'
+    + `&viewbox=${DELHI_BOX.west},${DELHI_BOX.north},${DELHI_BOX.east},${DELHI_BOX.south}`
+    + `&q=${encodeURIComponent(query)}`;
+  let list;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`the map search answered ${res.status}`);
+    list = await res.json();
+  } catch (err) {
+    throw new Error(`Could not reach the map search — ${err.message ?? err}. Check the internet connection.`);
+  }
+  return {
+    note,
+    hits: dedupePlaces(list.map((d) => ({
+      name: shortPlaceName(d.display_name, query),
+      address: d.display_name,
+      lat: Number(d.lat),
+      lng: Number(d.lon),
+      source: 'osm',
+    }))),
+  };
+}
+
+/**
+ * OpenStreetMap answers with the point AND the outline of the same place, which
+ * arrives as two identical-looking rows. Choosing between two lines that read
+ * the same is not a choice, so only the first survives.
+ */
+function dedupePlaces(hits) {
+  const seen = new Set();
+  return hits.filter((h) => {
+    const k = `${h.name.toLowerCase()}@${h.lat.toFixed(2)},${h.lng.toFixed(2)}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+/**
+ * @param opts.reveal  keep the whole thing out of the way until the list comes
+ *                     up empty. A form with two of these open at once reads as
+ *                     two search boxes competing; the second one only earns its
+ *                     space at the moment the list has failed you.
+ */
+function areaFinderHtml(id, opts = {}) {
+  return `<div class="finder" id="${id}"${opts.reveal ? ' data-reveal="1" hidden' : ''}>
+    <div class="finder-prompt" hidden></div>
+    <div class="finder-row">
+      <input type="search" class="finder-q" placeholder="${esc(opts.placeholder ?? 'Search the map for a place…')}" autocomplete="off">
+      <button type="button" class="btn btn-sm finder-go">Search</button>
+    </div>
+    <div class="field-hint">${opts.hint ?? 'For a place the list has never heard of. The map finds the point, you give it the name the drivers use.'}</div>
+    <div class="finder-out"></div>
+  </div>`;
+}
+
+/** The "nothing matches" line above a finder. Empty term hides it again. */
+function setFinderPrompt(finder, term) {
+  const el = $('.finder-prompt', finder);
+  if (!el) return;
+  // A reveal-only finder comes and goes with the prompt — but never while it is
+  // in the middle of something, or picking a result would make the results
+  // vanish under the cursor.
+  if (finder.dataset.reveal === '1' && !$('.finder-out', finder).innerHTML) finder.hidden = !term;
+  if (!term) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.innerHTML = `Nothing in the list matches "<strong>${esc(term)}</strong>".
+    <button type="button" class="link-btn">Search the map for it →</button>`;
+  $('.link-btn', el).onclick = () => {
+    $('.finder-q', finder).value = term;
+    $('.finder-go', finder).click();
+  };
+}
+
+/**
+ * @param onAdded  called with the created area. The screens do different things
+ *                 with it — a picker ticks it, the Areas page repaints — so the
+ *                 finder itself deliberately knows nothing about either.
+ */
+function wireAreaFinder(root, { onAdded } = {}) {
+  const q = $('.finder-q', root);
+  const out = $('.finder-out', root);
+  const zones = [...new Set(S.data.areaStats.map((a) => a.zone).filter(Boolean))].sort();
+  const msg = (text, kind = '') => { out.innerHTML = `<div class="finder-msg ${kind}">${text}</div>`; };
+
+  const save = async (hit, payload, force) => {
+    let created;
+    try {
+      created = await api('POST', '/areas', { ...payload, force }, { quiet: true });
+    } catch (err) {
+      const near = err.body?.near;
+      // The commonest refusal by far, and the one worth arguing with on screen:
+      // he may have named the stop already on the map in his own words, or a
+      // genuinely different corner of the same neighbourhood. Only the person
+      // who just spoke to him knows which, so ask him rather than guess.
+      if (near) {
+        out.innerHTML = `<div class="finder-msg warn">
+            <strong>${esc(err.message)}</strong>
+            <div style="margin-top:8px">Is that the same place he means?</div>
+            <div class="finder-actions" style="margin-top:8px">
+              <button type="button" class="btn btn-sm btn-primary fc-use">Use ${esc(near.name)} instead</button>
+              <button type="button" class="btn btn-sm fc-force">No — add ${esc(payload.name)} as its own area</button>
+            </div>
+          </div>`;
+        $('.fc-use', out).onclick = async () => {
+          await refresh();
+          msg(`Using ${esc(near.name)}.`, 'good');
+          q.value = '';
+          onAdded?.(area(near.id) ?? { id: near.id, name: near.name, zone: '' }, { existing: true });
+        };
+        $('.fc-force', out).onclick = () => save(hit, payload, true);
+        return;
+      }
+      // Already in the list under that exact name — the area it clashed with is
+      // the answer, so hand that one over instead of just refusing.
+      if (err.body?.id) {
+        await refresh();
+        msg(`${esc(err.message)}`, 'warn');
+        onAdded?.(area(err.body.id) ?? { id: err.body.id, name: payload.name, zone: '' }, { existing: true });
+        return;
+      }
+      msg(esc(err.message), 'bad');
+      return;
+    }
+
+    await refresh();
+    msg(`<strong>${esc(created.name)}</strong> is in the list now, in ${esc(created.zone)}. It is on the map from here on.`, 'good');
+    q.value = '';
+    setFinderPrompt(root, '');
+    onAdded?.(created, { existing: false });
+  };
+
+  const confirmHit = (hit) => {
+    const near = nearestArea(hit.lat, hit.lng);
+    out.innerHTML = `
+      <div class="finder-confirm">
+        <div class="field">
+          <label class="field-label">Call it</label>
+          <input type="text" class="fc-name" value="${esc(hit.name)}">
+          <div class="field-hint">The name the drivers say. This is what everyone searches for later.</div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label class="field-label">Zone</label>
+            <select class="fc-zone">${zones.map((z) => `<option ${near && z === near.zone ? 'selected' : ''}>${esc(z)}</option>`).join('')}</select>
+          </div>
+          <div class="field">
+            <label class="field-label">On the map at</label>
+            <input type="text" class="mono" value="${hit.lat.toFixed(5)}, ${hit.lng.toFixed(5)}" readonly>
+          </div>
+        </div>
+        <div class="field-hint">
+          ${esc(hit.address)}${near ? ` · nearest area you already have is <strong>${esc(near.name)}</strong>, ${near.km < 1 ? `${Math.round(near.km * 1000)} m` : `${near.km.toFixed(1)} km`} away` : ''}
+        </div>
+        <div class="finder-actions">
+          <button type="button" class="btn btn-primary btn-sm fc-save">Add to the list</button>
+          <a class="btn btn-sm" href="https://www.google.com/maps/search/?api=1&query=${hit.lat},${hit.lng}"
+             target="_blank" rel="noopener">Check the spot ↗</a>
+          <div class="sp"></div>
+          <button type="button" class="btn btn-sm btn-ghost fc-back">Back</button>
+        </div>
+      </div>`;
+
+    $('.fc-save', out).onclick = () => {
+      const name = $('.fc-name', out).value.trim();
+      if (!name) return toast('Give it a name first', 'bad');
+      save(hit, {
+        name,
+        zone: $('.fc-zone', out).value,
+        lat: hit.lat,
+        lng: hit.lng,
+        address: hit.address,
+        coordsSource: hit.source,
+      }, false);
+    };
+    $('.fc-back', out).onclick = () => $('.finder-go', root).click();
+  };
+
+  const search = async () => {
+    const term = q.value.trim();
+    if (term.length < 3) return toast('Type at least three letters', 'bad');
+    msg('Searching the map…');
+    let hits, note;
+    try {
+      ({ hits, note } = await findPlaces(term));
+    } catch (err) {
+      return msg(esc(err.message), 'bad');
+    }
+    if (!hits.length) {
+      return msg(`Nothing found for "${esc(term)}". Try the nearest landmark, metro station or market — the map knows those, and the pin only has to be close enough to be the right part of Delhi.`);
+    }
+    out.innerHTML = hits.map((h, i) => `
+      <button type="button" class="finder-hit" data-hit="${i}">
+        <span class="finder-hit-name">${esc(h.name)}</span>
+        <span class="finder-hit-addr">${esc(h.address)}</span>
+      </button>`).join('')
+      + `<div class="finder-src">${hits.length} found by ${hits[0].source === 'google' ? 'Google Maps' : 'OpenStreetMap'} · pick the right one</div>`
+      + (note ? `<div class="finder-src" style="color:var(--amber)">${esc(note)}</div>` : '');
+    $$('[data-hit]', out).forEach((b) => (b.onclick = () => confirmHit(hits[Number(b.dataset.hit)])));
+  };
+
+  $('.finder-go', root).onclick = search;
+  q.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); search(); } };
+}
+
+/**
+ * Put a freshly added area into an open picker, already ticked — the person
+ * added it because the driver works there, so making him then find it in a
+ * 69-row list and tick it would be asking the same question twice.
+ */
+function addAreaToPicker(pickRoot, a, filterSel, { tick = true } = {}) {
+  let row = $(`[data-apick-row="${a.id}"]`, pickRoot);
+  if (!row) {
+    pickRoot.insertAdjacentHTML('afterbegin', areaPickRows([a], tick ? [a.id] : [], null));
+    row = $(`[data-apick-row="${a.id}"]`, pickRoot);
+  } else if (tick) {
+    $('[data-apick]', row).checked = true;
+  }
+  row.classList.toggle('on', $('[data-apick]', row).checked);
+  row.style.display = '';
+  wireAreaPick(pickRoot);
+  const input = filterSel ? $(filterSel) : null;
+  if (input) { input.value = ''; input.dispatchEvent(new Event('input')); }
+  pickRoot.scrollTop = 0;
+  if (tick) toast(`${a.name} ticked as one of his areas`, 'good');
+}
+
+/**
+ * The same, for the one-answer picker. `pick` chooses it outright; without it
+ * the area is only made available — which is what the *other* picker on the
+ * same form wants, since a place added as somewhere he drives is not
+ * automatically where he starts.
+ */
+function addAreaToOnePicker(oneRoot, a, { pick = false, filterSel = null } = {}) {
+  let row = $(`[data-apick-row="${a.id}"]`, oneRoot);
+  if (!row) {
+    const group = $('[data-aone]', oneRoot)?.name ?? 'aone';
+    // After the blank, so "not asked" stays the first thing in the list.
+    const blank = $('[data-apick-row=""]', oneRoot);
+    const html = areaOneRows([a], pick ? a.id : null, group, null);
+    blank ? blank.insertAdjacentHTML('afterend', html) : oneRoot.insertAdjacentHTML('afterbegin', html);
+    row = $(`[data-apick-row="${a.id}"]`, oneRoot);
+  }
+  row.style.display = '';
+  if (pick) {
+    const rb = $('[data-aone]', row);
+    rb.checked = true;
+    $$('.apick', oneRoot).forEach((r) => r.classList.toggle('on', r === row));
+  }
+  wireAreaOne(oneRoot);
+  const input = filterSel ? $(filterSel) : null;
+  if (input) { input.value = ''; input.dispatchEvent(new Event('input')); }
+  oneRoot.scrollTop = 0;
 }
 
 function openContact(id) {
@@ -4578,10 +5061,10 @@ function openContact(id) {
       </div>
       <div class="field">
         <label class="field-label">Area</label>
-        <select id="c-area">
-          <option value="">— not set —</option>
-          ${areas.map((a) => `<option value="${a.id}" ${a.id === c.areaId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
-        </select>
+        <input type="search" id="c-area-q" placeholder="Search areas…" autocomplete="off">
+        <div class="area-pick area-pick-one" id="c-area">${
+          areaOneRows(areas, c.areaId ?? '', 'c-area', '— not set —')}</div>
+        ${areaFinderHtml('c-area-find', { reveal: true, placeholder: 'He is based somewhere not listed…' })}
         ${c.areaRaw ? `<div class="field-hint">Spreadsheet said "${esc(c.areaRaw)}".</div>` : ''}
       </div>
       ${c.phone ? `<a class="btn btn-block" href="tel:${esc(c.phone)}" style="margin-top:10px">Call ${esc(c.phone)}</a>` : ''}
@@ -4597,15 +5080,17 @@ function openContact(id) {
       </div>
       <div class="field">
         <label class="field-label">Starts his day at</label>
-        <select id="c-start">
-          <option value="">— not asked —</option>
-          ${areas.map((a) => `<option value="${a.id}" ${a.id === (c.startAreaId ?? '') ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
-        </select>
+        <input type="search" id="c-start-q" placeholder="Search areas…" autocomplete="off">
+        <div class="area-pick area-pick-one" id="c-start">${
+          areaOneRows(areas, c.startAreaId ?? '', 'c-start', '— not asked —')}</div>
+        ${areaFinderHtml('c-start-find', { reveal: true, placeholder: 'He starts somewhere not listed…' })}
       </div>
       <label class="field-label" style="margin-top:6px">Areas he drives in — tap the ★ for where he gets the most rides</label>
       <div id="c-zones">${zoneChips(areas)}</div>
+      <input type="search" id="c-filter" placeholder="Filter areas…" style="margin:6px 0 8px">
       <div class="area-pick" id="c-work">${areaPickRows(areas, c.workAreaIds ?? [], c.bestAreaId ?? null)}</div>
       <div class="field-hint" style="margin-top:6px">Two or more areas draws the roads between them as covered too, so long as they're close enough to shuttle between.</div>
+      ${areaFinderHtml('c-find', { placeholder: 'He named a place that isn\'t listed…' })}
     </div>
 
     <div class="drawer-section">
@@ -4734,6 +5219,48 @@ function openContact(id) {
 
   wireAreaPick($('#c-work'));
   wireZoneChips($('#c-zones'), $('#c-work'), areas);
+  wireAreaPickFilter('#c-filter', $('#c-work'), $('#c-find'));
+  for (const f of ['c-area', 'c-start']) {
+    wireAreaOne($(`#${f}`));
+    wireAreaPickFilter(`#${f}-q`, $(`#${f}`), $(`#${f}-find`));
+  }
+
+  // A place found from any one of the three joins all three, so the form cannot
+  // end up knowing about an area in one field and not in the one above it.
+  //
+  // What it MEANS stays with the field that found it: chosen as where he is
+  // based, or where he starts, it is only offered to the others and never
+  // ticked as somewhere he drives. He was asked one question, and only that one
+  // gets an answer.
+  //
+  // None of it is saved onto him yet either way. Save at the bottom still
+  // commits his answers, so this cannot half-write a driver's record behind his
+  // back.
+  const alsoOffer = (a, except) => {
+    if (except !== 'work') addAreaToPicker($('#c-work'), a, null, { tick: false });
+    if (except !== 'area') addAreaToOnePicker($('#c-area'), a);
+    if (except !== 'start') addAreaToOnePicker($('#c-start'), a);
+  };
+  wireAreaFinder($('#c-find'), {
+    onAdded: (a) => {
+      addAreaToPicker($('#c-work'), a, '#c-filter');
+      alsoOffer(a, 'work');
+    },
+  });
+  wireAreaFinder($('#c-area-find'), {
+    onAdded: (a) => {
+      addAreaToOnePicker($('#c-area'), a, { pick: true, filterSel: '#c-area-q' });
+      alsoOffer(a, 'area');
+      toast(`${a.name} set as his area`, 'good');
+    },
+  });
+  wireAreaFinder($('#c-start-find'), {
+    onAdded: (a) => {
+      addAreaToOnePicker($('#c-start'), a, { pick: true, filterSel: '#c-start-q' });
+      alsoOffer(a, 'start');
+      toast(`${a.name} set as where he starts`, 'good');
+    },
+  });
 
   // His autos are their own records, so these leave his page rather than trying
   // to edit a vehicle from inside a person.
@@ -4783,14 +5310,14 @@ function openContact(id) {
       phone: $('#c-phone').value.trim(),
       phones: $('#c-alt').value.split(',').map((p) => p.trim()).filter(Boolean),
       fleetSize: Number($('#c-fleet').value),
-      areaId: $('#c-area').value || null,
+      areaId: readAreaOne($('#c-area')),
       isCaptain: $('#c-is-captain').checked,
       captainId: $('#c-captain-of').value || null,
       notes: $('#c-notes').value,
       tenure: $('#c-tenure').value,
       parking: $('#c-parking').value.trim(),
       reference: $('#c-ref').value.trim(),
-      startAreaId: $('#c-start').value || null,
+      startAreaId: readAreaOne($('#c-start')),
       workAreaIds: work.workAreaIds,
       bestAreaId: work.bestAreaId,
       license: $('#c-license').value.trim(),
@@ -4839,7 +5366,10 @@ function newContact() {
         <div class="field-hint">More than 1 if he owns a fleet.</div></div>
     </div>
     <div class="field"><label class="field-label">Area</label>
-      <select id="n-area"><option value="">— pick —</option>${areas.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div>
+      <input type="search" id="n-area-q" placeholder="Search areas…" autocomplete="off">
+      <div class="area-pick area-pick-one" id="n-area">${
+        areaOneRows(areas, '', 'n-area', '— pick —')}</div>
+      ${areaFinderHtml('n-area-find', { reveal: true, placeholder: 'He is based somewhere not listed…' })}</div>
     <div class="field"><label class="field-label">Referred by</label><input type="text" id="n-ref" placeholder="Rama, a captain, walk-in…"></div>
     <label class="check" style="margin:10px 0"><input type="checkbox" id="n-captain"> Captain (area lead)</label>
 
@@ -4851,13 +5381,17 @@ function newContact() {
       </div>
       <div class="field">
         <label class="field-label">Starts his day at</label>
-        <select id="n-start"><option value="">— same as his area —</option>${areas.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
+        <input type="search" id="n-start-q" placeholder="Search areas…" autocomplete="off">
+        <div class="area-pick area-pick-one" id="n-start">${
+          areaOneRows(areas, '', 'n-start', '— same as his area —')}</div>
+        ${areaFinderHtml('n-start-find', { reveal: true, placeholder: 'He starts somewhere not listed…' })}
       </div>
       <label class="field-label" style="margin-top:6px">Areas he drives in — tap ★ for most rides</label>
       <div id="n-zones">${zoneChips(areas)}</div>
       <input type="search" id="n-filter" placeholder="Filter areas…" style="margin:6px 0 8px">
       <div class="area-pick" id="n-work">${areaPickRows(areas, [], null)}</div>
       <div class="field-hint" style="margin-top:6px">Two or more areas draws the roads between them as covered too.</div>
+      ${areaFinderHtml('n-find', { placeholder: 'He named a place that isn\'t listed…' })}
     </div>
 
     <div class="field"><label class="field-label">Notes</label><textarea id="n-notes" placeholder="Anything worth remembering"></textarea></div>
@@ -4865,12 +5399,46 @@ function newContact() {
 
   wireAreaPick($('#n-work'));
   wireZoneChips($('#n-zones'), $('#n-work'), areas);
-  wireAreaPickFilter('#n-filter', $('#n-work'));
+  wireAreaPickFilter('#n-filter', $('#n-work'), $('#n-find'));
+  for (const f of ['n-area', 'n-start']) {
+    wireAreaOne($(`#${f}`));
+    wireAreaPickFilter(`#${f}-q`, $(`#${f}`), $(`#${f}-find`));
+  }
+
+  // A new area has to reach every field on this form, or the man whose patch it
+  // is cannot be recorded as living or starting there — regularly the whole
+  // reason it was searched for in the first place. Same rule as his record: the
+  // field that found it is the only one that treats it as an answer.
+  const alsoOffer = (a, except) => {
+    if (except !== 'work') addAreaToPicker($('#n-work'), a, null, { tick: false });
+    if (except !== 'area') addAreaToOnePicker($('#n-area'), a);
+    if (except !== 'start') addAreaToOnePicker($('#n-start'), a);
+  };
+  wireAreaFinder($('#n-find'), {
+    onAdded: (a) => {
+      addAreaToPicker($('#n-work'), a, '#n-filter');
+      alsoOffer(a, 'work');
+    },
+  });
+  wireAreaFinder($('#n-area-find'), {
+    onAdded: (a) => {
+      addAreaToOnePicker($('#n-area'), a, { pick: true, filterSel: '#n-area-q' });
+      alsoOffer(a, 'area');
+      toast(`${a.name} set as his area`, 'good');
+    },
+  });
+  wireAreaFinder($('#n-start-find'), {
+    onAdded: (a) => {
+      addAreaToOnePicker($('#n-start'), a, { pick: true, filterSel: '#n-start-q' });
+      alsoOffer(a, 'start');
+      toast(`${a.name} set as where he starts`, 'good');
+    },
+  });
 
   $('#n-save').onclick = async () => {
     const name = $('#n-name').value.trim();
     if (!name) return toast('Name is needed', 'bad');
-    const areaId = $('#n-area').value || null;
+    const areaId = readAreaOne($('#n-area'));
     const work = readAreaPick($('#n-work'));
     const created = await api('POST', '/contacts', {
       name,
@@ -4884,7 +5452,7 @@ function newContact() {
     // Work areas go in a second call: POST /contacts owns the roster fields and
     // PUT owns the "where he works" answers, so there is one place each of them
     // is validated rather than two that can drift apart.
-    const start = $('#n-start').value || areaId;
+    const start = readAreaOne($('#n-start')) || areaId;
     if (start || work.workAreaIds.length) {
       await api('PUT', `/contacts/${created.id}`, {
         startAreaId: start,

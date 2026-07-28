@@ -646,6 +646,12 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
   max-height: 250px; overflow-y: auto;
   border: 1px solid var(--line); border-radius: var(--r); background: var(--panel);
 }
+/* one answer, not many — "starts his day at". Shorter, because it sits in the
+   middle of a form rather than being the point of the section. */
+.area-pick-one { max-height: 176px; margin-top: 6px; }
+.area-pick-one .apick-name.dim { color: var(--dim); }
+.apick-empty { padding: 10px 12px; font-size: 12.5px; color: var(--dim); }
+
 .apick { display: flex; align-items: center; border-bottom: 1px solid var(--line); }
 .apick:last-child { border-bottom: 0; }
 .apick:hover { background: var(--panel-2); }
@@ -664,6 +670,51 @@ input::placeholder, textarea::placeholder { color: var(--dim); }
 }
 .apick-star:hover { color: var(--amber); }
 .apick-star.on { color: var(--amber); }
+
+/* the map search — for places the area list has never heard of */
+.finder { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.finder-row { display: flex; gap: 6px; }
+.finder-row .finder-q { flex: 1; min-width: 0; }
+.finder-row .btn { flex: none; }
+.finder-prompt {
+  margin-bottom: 8px; padding: 8px 10px; font-size: 12px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-left: 2px solid var(--amber); border-radius: var(--r); color: var(--text);
+}
+.link-btn {
+  background: 0; border: 0; padding: 0; cursor: pointer;
+  color: var(--teal-hi); font: inherit; font-weight: 500;
+}
+.link-btn:hover { text-decoration: underline; }
+.finder-out:not(:empty) { margin-top: 8px; }
+.finder-msg {
+  padding: 9px 10px; font-size: 12px; color: var(--dim);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r);
+}
+.finder-msg strong { color: var(--text); }
+.finder-msg.good { border-color: #10b98166; color: var(--text); }
+.finder-msg.warn { border-color: #f59e0b66; color: var(--text); }
+.finder-msg.bad { border-color: #ef444466; color: var(--text); }
+.finder-hit {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  padding: 8px 10px; background: var(--panel);
+  border: 1px solid var(--line); border-bottom: 0; color: var(--text);
+}
+.finder-hit:first-child { border-radius: var(--r) var(--r) 0 0; }
+.finder-hit:last-of-type { border-bottom: 1px solid var(--line); border-radius: 0 0 var(--r) var(--r); }
+.finder-hit:hover { background: var(--hover); border-color: var(--teal-hi); }
+.finder-hit-name { display: block; font-size: 12.5px; font-weight: 500; }
+.finder-hit-addr {
+  display: block; margin-top: 2px; font-size: 11px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.finder-src { padding: 6px 2px 0; font-size: 11px; color: var(--dim); }
+.finder-confirm {
+  padding: 10px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--r);
+}
+.finder-confirm .field { margin-bottom: 8px; }
+.finder-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
 
 /* segmented control — map layers, and anywhere else one-of-N is a real choice */
 .seg { display: flex; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }

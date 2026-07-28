@@ -209,6 +209,69 @@ driver's. Sort the Drivers page by autos and work down.
 > These answers are **not in the spreadsheet** and never will be. They survive
 > *Re-import Excel* — the importer carries them across explicitly.
 
+### Adding a place the list has never heard of
+
+Drivers name spots the list does not have. The area list was built from the
+spreadsheet and from the demand research, so it was always going to be short of
+the words the men on the road actually use — a market gate, a depot, a colony's
+own name for its main road.
+
+Start typing it into the area filter. When nothing matches, the box stops being
+a dead end and offers the way out:
+
+> Nothing in the list matches "**Wazirpur**". **Search the map for it →**
+
+That search asks the same map the app draws on — **Google's**, when a key is set
+in Settings, and **OpenStreetMap's** when there is no key or Google refuses.
+Either way the answer is a real point, so the new area lands where the driver
+actually goes rather than at a guess. Pick the right result, give it the name the
+drivers say, and it is in the list: ticked on the form you were already filling
+in, and from then on drawn on the coverage map, countable in Auto Hunter,
+plannable into a day.
+
+The same search sits on **Areas → + Add an area**, for when a place comes up in
+conversation rather than while somebody's record is open.
+
+**Area** and **Starts his day at** work the same way. Both used to be dropdowns,
+which is the wrong shape for 69 areas — nothing to search, and no way at all to
+answer with a place the list has never heard of. Both are now the same list of
+rows with the same filter above and the same map search underneath, except that
+a man is based in one place and starts his day in one place, so they take one
+answer each rather than many.
+
+Each opens on his current answer rather than at the top of the alphabet, and
+their map search stays out of sight until the list comes up empty — three search
+boxes open at once on one form would just be three boxes competing.
+
+> A place found from one field is **offered** to the other two, so the form
+> cannot know about an area in one place and not in the one above it. But only
+> the field that found it treats it as an answer: added under **Area** it does
+> not become where he starts, and neither one ticks itself into the areas he
+> drives. He was asked one question, and only that one gets an answer.
+
+**Two things it refuses to do quietly.**
+
+- **A name already in the list** hands you that area instead of making a second
+  one. The importer merges areas by name, so two records sharing one would
+  collapse into a single one at the next *Re-import Excel* and take half the
+  drivers with it.
+- **A point within 600 m of an area you already have** asks first: *"That point
+  is 377 m from Hazrat Nizamuddin, which is already in the list. Is that the
+  same place he means?"* Usually it is — Sarai Kale Khan and Nizamuddin are one
+  stop in his own words, and two pins for it would split its autos in half,
+  flag both ends as thin, and send Rama sir there twice. But sometimes it is
+  genuinely a different corner, so the answer is yours: *Use Hazrat Nizamuddin
+  instead*, or *No — add it as its own area*.
+
+The **zone** is guessed from the nearest area you already work, because zones are
+Rama sir's own words for parts of the city and no geocoder knows them. Correct it
+before saving if the guess is wrong.
+
+An area added this way is marked as added here, keeps what the map called it, and
+**survives *Re-import Excel*** like every other area. It can be renamed, its pin
+moved, and — as long as no driver, auto or trip has been recorded against it yet
+— removed again from its own page, for when a search returned the wrong place.
+
 ---
 
 ## Auto Hunter
@@ -565,7 +628,7 @@ It only changes two things:
 | API | What it gives you | If it's off |
 |---|---|---|
 | **Maps JavaScript** | Google's map on the Coverage page | free OpenStreetMap instead |
-| **Geocoding** | the *Find address* button in Settings | paste coordinates instead |
+| **Geocoding** | the *Find address* button in Settings, and Google's answers when you [search for a place that isn't in the area list](#adding-a-place-the-list-has-never-heard-of) | paste coordinates instead; the place search falls back to OpenStreetMap and says so |
 
 Neither is needed. **Settings → Check my key** tests both and names any that's
 blocked — but you can ignore the whole thing and lose nothing but the map's
@@ -932,7 +995,12 @@ Pick one and stick to it.
 | `data.json` | **Your data.** |
 | `backups/` | Daily snapshots. |
 
-### Adding a new area
+### Adding a new area, in code
+
+> Most of the time you do not need this — use **Areas → + Add an area** in the
+> app, described [above](#adding-a-place-the-list-has-never-heard-of). Editing
+> `areas.js` is for teaching the *importer* a spelling the spreadsheet uses,
+> which is a different job from adding a place.
 
 Areas live in `areas.js`. Add the canonical name, its zone, its coordinates, and
 every spelling the spreadsheet uses:

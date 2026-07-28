@@ -1215,6 +1215,113 @@ async function api(req, res, url) {
     return send(res, 200, a);
   }
 
+  /**
+   * A place named this close to one already on the map is the same place in the
+   * driver's own words, not a new one. "Sarai Kale Khan" and "Nizamuddin" are
+   * one stop, and two pins for it would split its autos in half, flag both ends
+   * as thin, and send Rama sir there twice.
+   */
+  const SAME_PLACE_KM = 0.6;
+
+  // Adding an area by hand, for the places drivers name that the list has never
+  // heard of. The coordinates come from the browser — Google's geocoder, or the
+  // free OpenStreetMap one — because that is where the Maps key lives; the
+  // server only ever sees a name and a point, and does not care which found it.
+  if (resource === 'areas' && !id && method === 'POST') {
+    const body = await readBody(req);
+    const name = String(body.name ?? '').trim().replace(/\s+/g, ' ');
+    const lat = Number(body.lat);
+    const lng = Number(body.lng);
+
+    if (!name) return send(res, 400, { error: 'The place needs a name.' });
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return send(res, 400, { error: 'A place with no coordinates cannot be put on the map. Search for it again.' });
+    }
+
+    // The importer merges the spreadsheet back in BY NAME (see buildAreas in
+    // import.js), so two areas sharing one name would collapse into a single
+    // record at the next Re-import Excel — taking one of the two sets of
+    // drivers with it. One name, one area.
+    const clash = db.areas.find((a) => a.name.toLowerCase() === name.toLowerCase());
+    if (clash) {
+      return send(res, 409, { error: `${clash.name} is already in the list.`, id: clash.id });
+    }
+
+    const near = db.areas
+      .filter((a) => a.lat && a.lng)
+      .map((a) => ({ area: a, km: haversine({ lat, lng }, { lat: a.lat, lng: a.lng }) }))
+      .sort((x, y) => x.km - y.km)[0];
+
+    // Refused rather than merged silently: only the person who just spoke to
+    // the driver knows whether he meant the existing stop or a genuinely
+    // different one 400m away, so the answer is his to give.
+    if (near && near.km < SAME_PLACE_KM && !body.force) {
+      return send(res, 409, {
+        error: `That point is ${Math.round(near.km * 1000)} m from ${near.area.name}, which is already in the list.`,
+        near: { id: near.area.id, name: near.area.name, metres: Math.round(near.km * 1000) },
+        canForce: true,
+      });
+    }
+
+    const created = {
+      id: `area_${uid()}`,
+      name,
+      // Zones are Rama sir's own words for parts of the city, not something a
+      // geocoder knows. The nearest area he already works is the best guess
+      // available, and the form lets it be corrected before saving.
+      zone: String(body.zone ?? '').trim() || near?.area.zone || 'Unzoned',
+      lat: Number(lat.toFixed(6)),
+      lng: Number(lng.toFixed(6)),
+      coordsSource: ['google', 'osm', 'manual'].includes(body.coordsSource) ? body.coordsSource : 'manual',
+      onVisitList: false,
+      notes: String(body.notes ?? ''),
+      // What the map service called it. Kept because "Kale Khan" on a driver's
+      // lips and "Sarai Kale Khan Bus Terminal, Nizamuddin" on the map are the
+      // same point, and in a month only the second one is checkable.
+      address: String(body.address ?? ''),
+      source: 'app',
+      addedAt: new Date().toISOString(),
+    };
+    db.areas.push(created);
+    saveData(db);
+    return send(res, 201, created);
+  }
+
+  // Removing one added by hand — a typo, or the wrong search result. Only ever
+  // one of those: the built-in areas and the researched demand ones are rebuilt
+  // by the importer, so deleting them would last until the next Re-import Excel
+  // and then quietly undo itself.
+  if (resource === 'areas' && id && method === 'DELETE') {
+    const i = db.areas.findIndex((x) => x.id === id);
+    if (i < 0) return send(res, 404, { error: 'Area not found.' });
+    const a = db.areas[i];
+    if (a.source !== 'app') {
+      return send(res, 400, {
+        error: `${a.name} came from the spreadsheet or the demand research, not from this screen. Rename it or move its pin instead of deleting it.`,
+      });
+    }
+
+    // Anything already recorded against it is somebody's answer about his own
+    // day. Deleting the area would silently edit that answer, so the attachment
+    // has to be undone by hand first, where it can be seen.
+    const drivers = db.contacts.filter((c) =>
+      c.areaId === id || c.startAreaId === id || c.bestAreaId === id || (c.workAreaIds ?? []).includes(id)).length;
+    const autos = db.vehicles.filter((v) => v.areaId === id).length;
+    const trips = db.trips.filter((t) => (t.stops ?? []).some((s) => s.areaId === id)).length;
+    if (drivers || autos || trips) {
+      const parts = [
+        drivers && `${drivers} driver${drivers === 1 ? '' : 's'}`,
+        autos && `${autos} auto${autos === 1 ? '' : 's'}`,
+        trips && `${trips} trip${trips === 1 ? '' : 's'}`,
+      ].filter(Boolean);
+      return send(res, 409, { error: `${a.name} still has ${parts.join(' and ')} recorded against it. Move them first.` });
+    }
+
+    db.areas.splice(i, 1);
+    saveData(db);
+    return send(res, 200, { ok: true, name: a.name });
+  }
+
   // ---- trips
   if (resource === 'trips') {
     if (method === 'GET') return send(res, 200, db.trips);
